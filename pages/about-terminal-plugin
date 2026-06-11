@@ -1,0 +1,108 @@
+{
+  "title": "About Terminal Plugin",
+  "story": [
+    {
+      "type": "markdown",
+      "id": "128671b219b015b0",
+      "text": "The Terminal Plugin puts a live shell inside a wiki page. It is the successor to the shell plugin — same `text` semantics, plus an interactive xterm attached to a named pty session. Full design at [[Terminal Plugin]] on plugin.fedwiki.club."
+    },
+    {
+      "type": "terminal",
+      "id": "21bff870e385ef5d",
+      "text": "echo hello from the terminal plugin\nuname -a"
+    },
+    {
+      "type": "markdown",
+      "id": "9ee1a7e48a9a340b",
+      "text": "## Modes\n\nThe item above renders display-only when the pty service is unreachable — indistinguishable from the code plugin. When the local-first FastAPI service is up, two buttons appear:\n\n- **run** — execute once and capture stdout, stderr and exit code inline. Stateless and reproducible; the output is data the page can keep\n- **terminal** — toggle a live shell in the item with the script *pasted at the prompt, ready to run*. Click again (or **✕**) to hide it; the session stays alive\n\nThe open terminal carries its own controls in the header bar: **paste** re-pastes the script, **⏎** presses Return, **⤢** zooms fullscreen (*esc* restores), **✕** closes. A separate **tab ↗** opens the same session full-bleed in a new tab."
+    },
+    {
+      "type": "markdown",
+      "id": "485a55357fbca879",
+      "text": "## Item Format"
+    },
+    {
+      "type": "code",
+      "id": "10188b2dcab404e6",
+      "text": "{\n  \"type\": \"terminal\",\n  \"text\": \"cd ~/project\\nls | head\",\n  \"session\": \"localhost-admin\",\n  \"service\": \"http://localhost:8000\"\n}"
+    },
+    {
+      "type": "markdown",
+      "id": "41440a125565300a",
+      "text": "`session` names a server-side pty — items and tabs sharing the name share one shell. `service` overrides the FastAPI base url, default `http://localhost:8000`."
+    },
+    {
+      "type": "markdown",
+      "id": "af9790489979ef76",
+      "text": "## Requirements\n\nThe live modes need the pty service from `service/terminal_service.py` included in a FastAPI app bound to `127.0.0.1`:"
+    },
+    {
+      "type": "code",
+      "id": "5003770c925c6d27",
+      "text": "from terminal_service import router as terminal_router\napp.include_router(terminal_router)"
+    },
+    {
+      "type": "markdown",
+      "id": "6a9f04925f36c189",
+      "text": "## See\n\n- [[Terminal Plugin]] · [[Xterm in Wiki]] · [[About Code Plugin]]"
+    }
+  ],
+  "journal": [
+    {
+      "type": "create",
+      "item": {
+        "title": "About Terminal Plugin",
+        "story": [
+          {
+            "type": "markdown",
+            "id": "128671b219b015b0",
+            "text": "The Terminal Plugin puts a live shell inside a wiki page. It is the successor to the shell plugin — same `text` semantics, plus an interactive xterm attached to a named pty session. Full design at [[Terminal Plugin]] on plugin.fedwiki.club."
+          },
+          {
+            "type": "terminal",
+            "id": "21bff870e385ef5d",
+            "text": "echo hello from the terminal plugin\nuname -a"
+          },
+          {
+            "type": "markdown",
+            "id": "9ee1a7e48a9a340b",
+            "text": "## Modes\n\nThe item above renders display-only when the pty service is unreachable — indistinguishable from the code plugin. When the local-first FastAPI service is up, two buttons appear:\n\n- **run** — execute once and capture stdout, stderr and exit code inline. Stateless and reproducible; the output is data the page can keep\n- **terminal** — toggle a live shell in the item with the script *pasted at the prompt, ready to run*. Click again (or **✕**) to hide it; the session stays alive\n\nThe open terminal carries its own controls in the header bar: **paste** re-pastes the script, **⏎** presses Return, **⤢** zooms fullscreen (*esc* restores), **✕** closes. A separate **tab ↗** opens the same session full-bleed in a new tab."
+          },
+          {
+            "type": "markdown",
+            "id": "485a55357fbca879",
+            "text": "## Item Format"
+          },
+          {
+            "type": "code",
+            "id": "10188b2dcab404e6",
+            "text": "{\n  \"type\": \"terminal\",\n  \"text\": \"cd ~/project\\nls | head\",\n  \"session\": \"localhost-admin\",\n  \"service\": \"http://localhost:8000\"\n}"
+          },
+          {
+            "type": "markdown",
+            "id": "41440a125565300a",
+            "text": "`session` names a server-side pty — items and tabs sharing the name share one shell. `service` overrides the FastAPI base url, default `http://localhost:8000`."
+          },
+          {
+            "type": "markdown",
+            "id": "af9790489979ef76",
+            "text": "## Requirements\n\nThe live modes need the pty service from `service/terminal_service.py` included in a FastAPI app bound to `127.0.0.1`:"
+          },
+          {
+            "type": "code",
+            "id": "5003770c925c6d27",
+            "text": "from terminal_service import router as terminal_router\napp.include_router(terminal_router)"
+          },
+          {
+            "type": "markdown",
+            "id": "6a9f04925f36c189",
+            "text": "## See\n\n- [[Terminal Plugin]] · [[Xterm in Wiki]] · [[About Code Plugin]]"
+          }
+        ]
+      },
+      "date": 1781198427000,
+      "certificate": "from marvin"
+    }
+  ],
+  "plugin": "terminal"
+}

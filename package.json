@@ -1,0 +1,50 @@
+{
+  "name": "wiki-plugin-terminal",
+  "version": "0.1.0",
+  "description": "Federated Wiki plugin — a live shell terminal in the page; successor to wiki-plugin-shell",
+  "keywords": [
+    "wiki",
+    "federated wiki",
+    "plugin",
+    "terminal",
+    "shell",
+    "xterm",
+    "pty"
+  ],
+  "author": {
+    "name": "David Bovill",
+    "url": "https://github.com/Hitchhikers-Guide-to-the-Galaxy"
+  },
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "client",
+    "server",
+    "pages",
+    "service",
+    "factory.json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hitchhikers-Guide-to-the-Galaxy/wiki-plugin-terminal.git"
+  },
+  "engines": {
+    "node": ">=18.x"
+  },
+  "scripts": {
+    "build": "npm run clean && npm run test && node --no-warnings scripts/build-client.js",
+    "dev": "node --no-warnings scripts/build-client.js --watch",
+    "about": "wiki -p 3010 -d . --security_legacy",
+    "clean": "rm -f client/terminal.js client/terminal.js.map client/terminal.css",
+    "test": "node --test",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "highlight.js": "^11.11.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

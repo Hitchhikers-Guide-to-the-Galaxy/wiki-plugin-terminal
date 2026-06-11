@@ -1,0 +1,6 @@
+{
+  "name": "Terminal",
+  "title": "Live shell terminal — successor to the shell plugin",
+  "category": "other",
+  "supersedes": ["shell"]
+}
