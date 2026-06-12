@@ -14,7 +14,7 @@
     {
       "type": "markdown",
       "id": "9ee1a7e48a9a340b",
-      "text": "## Modes\n\nThe item above renders display-only when the pty service is unreachable — indistinguishable from the code plugin. When the local-first FastAPI service is up, two buttons appear:\n\n- **run** — execute once and capture stdout, stderr and exit code inline. Stateless and reproducible; the output is data the page can keep\n- **terminal** — toggle a live shell in the item with the script *pasted at the prompt, ready to run*. Click again (or **✕**) to hide it; the session stays alive\n\nThe open terminal carries its own controls in the header bar: **paste** re-pastes the script, **⏎** presses Return, **⤢** zooms fullscreen (*esc* restores), **✕** closes. A separate **tab ↗** opens the same session full-bleed in a new tab."
+      "text": "## Modes\n\nThe item above renders display-only when the pty service is unreachable — like a code item, but tinted warning-amber as the cue that this is runnable shell. When the local-first FastAPI service is up, two buttons appear:\n\n- **run** — execute once and capture stdout, stderr and exit code inline. Stateless and reproducible; the output is data the page can keep\n- **terminal** — toggle a live shell in the item with the script *pasted at the prompt, ready to run*. Click again (or **✕**) to hide it; the session stays alive\n\nThe open terminal carries its own controls in the header bar: **paste** re-pastes the script, **⏎** presses Return, **⤢** zooms fullscreen (*esc* restores), **✕** closes. A separate **tab ↗** opens the same session full-bleed in a new tab."
     },
     {
       "type": "markdown",
@@ -30,6 +30,26 @@
       "type": "markdown",
       "id": "41440a125565300a",
       "text": "`session` names a server-side pty — items and tabs sharing the name share one shell. `service` overrides the FastAPI base url, default `http://localhost:8000`."
+    },
+    {
+      "type": "markdown",
+      "id": "e4cf338b9acaa895",
+      "text": "## Formatting Directives\n\nLeading ALL-CAPS lines of the item text set formatting, and are stripped from the displayed, pasted and run script — Ward's convention, as in the frame plugin's `HEIGHT` and the similarity plugin's `LIMIT:`."
+    },
+    {
+      "type": "code",
+      "id": "42802804f6204016",
+      "text": "COLOR: green\nHEIGHT: 320\nFONT: 14\nSESSION: build\nRUN\necho the script starts here"
+    },
+    {
+      "type": "markdown",
+      "id": "15d3549919b46f3e",
+      "text": "- **COLOR:** (or **COLOUR:** / **THEME:**) — a named scheme: `dark` (default), `paper` (light), `green` and `amber` (classic phosphor), `solarized`, `solarized-light`, `dracula`, `nord`\n- **HEIGHT:** — terminal area height in px\n- **FONT:** (or **SIZE:**) — font size\n- **SESSION:** — pty session name, overriding the item field\n- **RUN** — show the *run* button (one-shot capture). Off by default: the capture path has no pty, so any script that prompts — `sudo` above all — would hang. Such scripts belong in the live terminal."
+    },
+    {
+      "type": "markdown",
+      "id": "ab12cd34ef560042",
+      "text": "## Sudo and Passwords\n\nThe live terminal is a **real pty**, so interactive prompts work exactly as in Terminal.app — `sudo` asks for your password *inside the xterm in the browser*, ssh asks for passphrases, and so on. This is the sanctioned way to run privileged one-liners from a wiki page: a wiki *button* can never prompt for escalation, but an embedded terminal can, because it is a genuine tty. See the localhost page *Outside Local Wiki* for where this boundary lies."
     },
     {
       "type": "markdown",
@@ -66,7 +86,7 @@
           {
             "type": "markdown",
             "id": "9ee1a7e48a9a340b",
-            "text": "## Modes\n\nThe item above renders display-only when the pty service is unreachable — indistinguishable from the code plugin. When the local-first FastAPI service is up, two buttons appear:\n\n- **run** — execute once and capture stdout, stderr and exit code inline. Stateless and reproducible; the output is data the page can keep\n- **terminal** — toggle a live shell in the item with the script *pasted at the prompt, ready to run*. Click again (or **✕**) to hide it; the session stays alive\n\nThe open terminal carries its own controls in the header bar: **paste** re-pastes the script, **⏎** presses Return, **⤢** zooms fullscreen (*esc* restores), **✕** closes. A separate **tab ↗** opens the same session full-bleed in a new tab."
+            "text": "## Modes\n\nThe item above renders display-only when the pty service is unreachable — like a code item, but tinted warning-amber as the cue that this is runnable shell. When the local-first FastAPI service is up, two buttons appear:\n\n- **run** — execute once and capture stdout, stderr and exit code inline. Stateless and reproducible; the output is data the page can keep\n- **terminal** — toggle a live shell in the item with the script *pasted at the prompt, ready to run*. Click again (or **✕**) to hide it; the session stays alive\n\nThe open terminal carries its own controls in the header bar: **paste** re-pastes the script, **⏎** presses Return, **⤢** zooms fullscreen (*esc* restores), **✕** closes. A separate **tab ↗** opens the same session full-bleed in a new tab."
           },
           {
             "type": "markdown",
@@ -82,6 +102,21 @@
             "type": "markdown",
             "id": "41440a125565300a",
             "text": "`session` names a server-side pty — items and tabs sharing the name share one shell. `service` overrides the FastAPI base url, default `http://localhost:8000`."
+          },
+          {
+            "type": "markdown",
+            "id": "e4cf338b9acaa895",
+            "text": "## Formatting Directives\n\nLeading ALL-CAPS lines of the item text set formatting, and are stripped from the displayed, pasted and run script — Ward's convention, as in the frame plugin's `HEIGHT` and the similarity plugin's `LIMIT:`."
+          },
+          {
+            "type": "code",
+            "id": "42802804f6204016",
+            "text": "COLOR: green\nHEIGHT: 320\nFONT: 14\nSESSION: build\necho the script starts here"
+          },
+          {
+            "type": "markdown",
+            "id": "15d3549919b46f3e",
+            "text": "- **COLOR:** (or **COLOUR:** / **THEME:**) — a named scheme: `dark` (default), `paper` (light), `green` and `amber` (classic phosphor), `solarized`, `solarized-light`, `dracula`, `nord`\n- **HEIGHT:** — terminal area height in px\n- **FONT:** (or **SIZE:**) — font size\n- **SESSION:** — pty session name, overriding the item field"
           },
           {
             "type": "markdown",

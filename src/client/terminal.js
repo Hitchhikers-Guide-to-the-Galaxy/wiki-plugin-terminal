@@ -9,6 +9,16 @@
 //   service: "http://localhost:8000"     // optional FastAPI service override
 // }
 //
+// Leading ALL-CAPS lines of the text are formatting directives (see
+// parseDirectives in helpers.js), stripped from the displayed/pasted/run
+// script:
+//
+//   COLOR: green     named scheme — dark, paper, green, amber, solarized,
+//                    solarized-light, dracula, nord (COLOUR:/THEME: accepted)
+//   HEIGHT: 320      terminal area height in px
+//   FONT: 14         font size
+//   SESSION: build   pty session name
+//
 // Degradation: when the pty service is unreachable (public servers), the item
 // renders as a code-style display only. When reachable (local-first), a
 // toolbar offers:
@@ -27,7 +37,8 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
-import { expand, sessionName, serviceBase, wsUrl, makeCaptureScanner } from './helpers.js'
+import { expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, isLocalHost,
+  parseDirectives, schemeFor } from './helpers.js'
 
 hljs.registerLanguage('bash', bash)
 
@@ -35,22 +46,13 @@ hljs.registerLanguage('bash', bash)
 // (A future `language` field could route LiveCode/wasm here instead.)
 const highlightScript = text => hljs.highlight(text || '', { language: 'bash' }).value
 
-// Dark terminal palette (VS Code "Dark+" flavour). The host and xterm share
-// the same background so the column reads as one dark surface.
-const THEME = {
-  background: '#1e1e1e',
-  foreground: '#d4d4d4',
-  cursor: '#ffffff',
-  cursorAccent: '#1e1e1e',
-  selectionBackground: '#264f78',
-  black: '#000000', red: '#cd3131', green: '#0dbc79', yellow: '#e5e510',
-  blue: '#2472c8', magenta: '#bc3fbc', cyan: '#11a8cd', white: '#e5e5e5',
-  brightBlack: '#666666', brightRed: '#f14c4c', brightGreen: '#23d18b',
-  brightYellow: '#f5f543', brightBlue: '#3b8eea', brightMagenta: '#d670d6',
-  brightCyan: '#29b8db', brightWhite: '#ffffff',
-}
+// Default palette for the baked CSS; per-item schemes from a COLOR: directive
+// override with inline styles at open time.
+const THEME = schemeFor('dark')
 
 const STYLE = `
+  .terminal-item .terminal-script { background:#fff8e6; border-left:3px solid #ffb000 }
+  .terminal-item .terminal-script code.hljs { background:transparent }
   .terminal-item .terminal-tools { margin-top:4px }
   .terminal-item .terminal-tools button { margin-right:4px; font-size:11px }
   .terminal-item.term-open .terminal-tools .t-term { background:#333; color:#fff }
@@ -109,9 +111,10 @@ const healthy = async base => {
 
 const emit = ($item, item) => {
   ensureAssets()
+  const { script } = parseDirectives(item.text)
   $item.append(`
     <div class="terminal-item">
-      <pre class="terminal-script hljs"><code class="hljs language-bash">${highlightScript(item.text)}</code></pre>
+      <pre class="terminal-script hljs"><code class="hljs language-bash">${highlightScript(script)}</code></pre>
       <div class="terminal-tools"></div>
       <div class="terminal-reply"></div>
       <div class="terminal-panel">
@@ -138,13 +141,13 @@ const renderReply = ($item, { stdout, stderr, exit }) => {
   `)
 }
 
-const run = async ($item, item, base) => {
+const run = async ($item, script, base) => {
   $item.find('.terminal-reply').html('<span class="exit">running…</span>')
   try {
     const res = await fetch(`${base}/terminal/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: item.text || '' }),
+      body: JSON.stringify({ text: script || '' }),
     })
     renderReply($item, await res.json())
   } catch (err) {
@@ -152,19 +155,32 @@ const run = async ($item, item, base) => {
   }
 }
 
-const attach = ($item, item, base) => {
-  const cached = $item.data('terminal')
-  if (cached) return cached
-
+const attach = ($item, item, base, opts = {}) => {
   // The panel is shown before attach is called, so the host already has a real
   // layout — no .show() here (panel visibility is the toggle).
   const host = $item.find('.terminal-host').get(0)
-  const term = new Terminal({ fontSize: 12, cursorBlink: true, theme: THEME })
+
+  // Reuse the live terminal — but only while its host is still in the
+  // document. An edit re-emits a fresh wrapper, orphaning the old xterm; in
+  // that case dispose it and attach anew (the pty session itself persists
+  // server-side, so the shell survives — only local scrollback is lost).
+  const cached = $item.data('terminal')
+  if (cached) {
+    if (cached.host === host) return cached
+    cached.socket.close()
+    cached.term.dispose()
+    $item.removeData('terminal')
+  }
+
+  const theme = schemeFor(opts.scheme)
+  if (opts.height) host.style.height = `${opts.height}px`
+  host.style.background = theme.background
+  const term = new Terminal({ fontSize: opts.fontSize || 12, cursorBlink: true, theme })
   const fit = new FitAddon()
   term.loadAddon(fit)
   term.open(host)
 
-  const socket = new WebSocket(wsUrl(base, `/terminal/pty/${sessionName(item)}`))
+  const socket = new WebSocket(wsUrl(base, `/terminal/pty/${sessionName(item, opts.session)}`))
   socket.binaryType = 'arraybuffer'
   const decoder = new TextDecoder()
   const scan = makeCaptureScanner(result => $item.trigger('terminal-result', result))
@@ -190,17 +206,25 @@ const attach = ($item, item, base) => {
   // The shell isn't ready for bracketed paste until its line editor draws the
   // first prompt and enables paste mode (\e[?2004h). Pasting before then leaks
   // the raw \e[200~…\e[201~ markers into the buffer. Resolve `ready` when that
-  // sequence arrives, with a fallback so a shell that never sends it (or a
-  // re-attach to an already-primed session) still unblocks.
+  // sequence arrives — accumulating across frames, since the marker can split —
+  // with a generous fallback only for shells that never send it (a slow login
+  // shell sourcing a heavy ~/.zshrc can take seconds to reach its first prompt).
   let markReady
   const ready = new Promise(resolve => { markReady = resolve })
-  setTimeout(markReady, 1500)
+  setTimeout(markReady, 8000)
+  let probe = ''
 
   socket.onmessage = event => {
     const bytes = new Uint8Array(event.data)
     term.write(bytes)
     const text = decoder.decode(bytes, { stream: true })
-    if (text.includes('\x1b[?2004h')) markReady()
+    if (probe !== null) {
+      probe = (probe + text).slice(-4096)
+      if (probe.includes('\x1b[?2004h')) {
+        markReady()
+        probe = null
+      }
+    }
     scan(text)
   }
   socket.onopen = () => refit()
@@ -213,7 +237,7 @@ const attach = ($item, item, base) => {
   })
   new ResizeObserver(() => fit.fit()).observe(host)
 
-  const handle = { term, fit, socket, refit, send, ready }
+  const handle = { term, fit, socket, refit, send, ready, host, theme }
   $item.data('terminal', handle)
   return handle
 }
@@ -221,14 +245,18 @@ const attach = ($item, item, base) => {
 // Bracketed paste: zsh inserts the text as one editable block at the prompt
 // (multi-line scripts land intact, cursor ready) without executing it. Gated on
 // `ready` so the markers are never sent before the shell enables paste mode.
-const pasteScript = (handle, item) =>
-  handle.ready.then(() => handle.send(`\x1b[200~${item.text || ''}\x1b[201~`))
+const pasteScript = (handle, script) =>
+  handle.ready.then(() => handle.send(`\x1b[200~${script || ''}\x1b[201~`))
 
 const bind = async ($item, item) => {
   $item.find('.terminal-script').on('dblclick', () => wiki.textEditor($item, item))
 
+  // Local-first only. On a public server the plugin is inert — just the code
+  // display, no toolbar, no network probe — exactly like the code plugin.
+  if (!isLocalHost(window.location.hostname)) return
+
   const base = serviceBase(item)
-  if (!(await healthy(base))) return // public server or service down: display only
+  if (!(await healthy(base))) return // service down on localhost: display only
 
   // Guard against fedwiki binding the *same* rendered item twice (the async
   // health check above can let two binds interleave). Key the flag on the
@@ -239,17 +267,25 @@ const bind = async ($item, item) => {
   if ($box.data('bound')) return
   $box.data('bound', true)
 
+  // Formatting directives from the leading lines of the item text; the script
+  // is what remains. Everything below runs against the stripped script.
+  const opts = parseDirectives(item.text)
+  const { script } = opts
+
+  // run is opt-in (RUN directive): one-shot capture has no pty, so anything
+  // that prompts — sudo above all — would hang. The live terminal always works.
   const $tools = $item.find('.terminal-tools')
   $tools.html(`
-    <button class="t-run" title="run once, capture the output">run</button>
+    ${opts.run ? '<button class="t-run" title="run once, capture the output">run</button>' : ''}
     <button class="t-term" title="toggle a live terminal with the script pasted">terminal</button>
     <button class="t-tab" title="open the session in a new tab">tab ↗</button>
   `)
 
   const $panel = $item.find('.terminal-panel')
+  $panel.css('background', schemeFor(opts.scheme).background)
 
   // run — one-shot capture, no terminal UI
-  $tools.find('.t-run').on('click', () => run($item, item, base))
+  $tools.find('.t-run').on('click', () => run($item, script, base))
 
   // terminal — toggle the live area. Opening attaches (once) and pastes the
   // script ready to run; closing hides the area but keeps the session alive.
@@ -261,10 +297,10 @@ const bind = async ($item, item) => {
   const setOpen = open => {
     $box.toggleClass('term-open', open)
     if (!open) return $panel.removeClass('zoomed')
-    const handle = attach($item, item, base)
-    $item.find('.terminal-name').text(sessionName(item))
+    const handle = attach($item, item, base, opts)
+    $item.find('.terminal-name').text(sessionName(item, opts.session))
     if (!$item.data('pasted')) {
-      pasteScript(handle, item)
+      pasteScript(handle, script)
       $item.data('pasted', true)
     }
     requestAnimationFrame(() => { handle.refit(); handle.term.focus() })
@@ -273,25 +309,25 @@ const bind = async ($item, item) => {
   $item.find('.t-close').on('click', () => setOpen(false))
 
   // paste — re-paste the (possibly edited) script at the prompt
-  $item.find('.t-paste').on('click', () => pasteScript(attach($item, item, base), item))
+  $item.find('.t-paste').on('click', () => pasteScript(attach($item, item, base, opts), script))
 
   // ⏎ — press Return to run whatever is at the prompt
-  $item.find('.t-enter').on('click', () => attach($item, item, base).send('\r'))
+  $item.find('.t-enter').on('click', () => attach($item, item, base, opts).send('\r'))
 
   // ⤢ — zoom the panel fullscreen
   $item.find('.t-zoom').on('click', () => {
     $panel.toggleClass('zoomed')
-    requestAnimationFrame(() => attach($item, item, base).refit())
+    requestAnimationFrame(() => attach($item, item, base, opts).refit())
   })
   $(document).on('keydown.terminal', event => {
     if (event.key === 'Escape' && $panel.hasClass('zoomed')) {
       $panel.removeClass('zoomed')
-      requestAnimationFrame(() => attach($item, item, base).refit())
+      requestAnimationFrame(() => attach($item, item, base, opts).refit())
     }
   })
 
   $tools.find('.t-tab').on('click', () =>
-    window.open(`${base}/terminal/page?session=${sessionName(item)}`, '_blank')
+    window.open(`${base}/terminal/page?session=${sessionName(item, opts.session)}`, '_blank')
   )
 }
 
