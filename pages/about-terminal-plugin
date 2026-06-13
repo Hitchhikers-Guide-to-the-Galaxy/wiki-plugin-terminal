@@ -3,70 +3,81 @@
   "story": [
     {
       "type": "markdown",
-      "id": "128671b219b015b0",
+      "id": "3c7631f875154c06",
       "text": "The Terminal Plugin puts a live shell inside a wiki page. It is the successor to the shell plugin — same `text` semantics, plus an interactive xterm attached to a named pty session. Full design at [[Terminal Plugin]] on plugin.fedwiki.club."
     },
     {
+      "type": "markdown",
+      "id": "fe5537c308b4e02b",
+      "text": "## Repositories\n\n- GitHub — https://github.com/Hitchhikers-Guide-to-the-Galaxy/wiki-plugin-terminal\n- npm — https://www.npmjs.com/package/wiki-plugin-terminal"
+    },
+    {
       "type": "terminal",
-      "id": "21bff870e385ef5d",
+      "id": "cc55ec87bd9ad79f",
       "text": "echo hello from the terminal plugin\nuname -a"
     },
     {
       "type": "markdown",
-      "id": "9ee1a7e48a9a340b",
+      "id": "339abdf7f798216c",
       "text": "## Modes\n\nThe item above renders display-only when the pty service is unreachable — like a code item, but tinted warning-amber as the cue that this is runnable shell. When the local-first FastAPI service is up, two buttons appear:\n\n- **run** — execute once and capture stdout, stderr and exit code inline. Stateless and reproducible; the output is data the page can keep\n- **terminal** — toggle a live shell in the item with the script *pasted at the prompt, ready to run*. Click again (or **✕**) to hide it; the session stays alive\n\nThe open terminal carries its own controls in the header bar: **paste** re-pastes the script, **⏎** presses Return, **⤢** zooms fullscreen (*esc* restores), **✕** closes. A separate **tab ↗** opens the same session full-bleed in a new tab."
     },
     {
       "type": "markdown",
-      "id": "485a55357fbca879",
+      "id": "7d9bdd6be93dade3",
       "text": "## Item Format"
     },
     {
       "type": "code",
-      "id": "10188b2dcab404e6",
+      "id": "e270d4eabae726b4",
       "text": "{\n  \"type\": \"terminal\",\n  \"text\": \"cd ~/project\\nls | head\",\n  \"session\": \"localhost-admin\",\n  \"service\": \"http://localhost:8000\"\n}"
     },
     {
       "type": "markdown",
-      "id": "41440a125565300a",
+      "id": "c4c1103836c96ea3",
       "text": "`session` names a server-side pty — items and tabs sharing the name share one shell. `service` overrides the FastAPI base url, default `http://localhost:8000`."
     },
     {
       "type": "markdown",
-      "id": "e4cf338b9acaa895",
+      "id": "44a9da568f77ccda",
       "text": "## Formatting Directives\n\nLeading ALL-CAPS lines of the item text set formatting, and are stripped from the displayed, pasted and run script — Ward's convention, as in the frame plugin's `HEIGHT` and the similarity plugin's `LIMIT:`."
     },
     {
       "type": "code",
-      "id": "42802804f6204016",
+      "id": "4cb74f553e835dc2",
       "text": "COLOR: green\nHEIGHT: 320\nFONT: 14\nSESSION: build\nRUN\necho the script starts here"
     },
     {
       "type": "markdown",
-      "id": "15d3549919b46f3e",
+      "id": "20bd46f005d420b4",
       "text": "- **COLOR:** (or **COLOUR:** / **THEME:**) — a named scheme: `dark` (default), `paper` (light), `green` and `amber` (classic phosphor), `solarized`, `solarized-light`, `dracula`, `nord`\n- **HEIGHT:** — terminal area height in px\n- **FONT:** (or **SIZE:**) — font size\n- **SESSION:** — pty session name, overriding the item field\n- **RUN** — show the *run* button (one-shot capture). Off by default: the capture path has no pty, so any script that prompts — `sudo` above all — would hang. Such scripts belong in the live terminal."
     },
     {
       "type": "markdown",
-      "id": "ab12cd34ef560042",
-      "text": "## Sudo and Passwords\n\nThe live terminal is a **real pty**, so interactive prompts work exactly as in Terminal.app — `sudo` asks for your password *inside the xterm in the browser*, ssh asks for passphrases, and so on. This is the sanctioned way to run privileged one-liners from a wiki page: a wiki *button* can never prompt for escalation, but an embedded terminal can, because it is a genuine tty. See the localhost page *Outside Local Wiki* for where this boundary lies."
+      "id": "ea7ff55af6d9ab57",
+      "text": "## Workflows\n\nA terminal item can be a **step in a [[TermFlow Plan|TermFlow]] workflow**. The Terminal plugin registers a workflow *runner* and renders the gated state: while a step's guard is unmet the item is **locked** — no toolbar, no amber tint, just an inert code-style block with a `🔒 needs:` hint — and unlocks once the guard passes. When a workflow runs a step, its captured result is stored on the item and recorded in the page history."
     },
     {
       "type": "markdown",
-      "id": "af9790489979ef76",
+      "id": "0419ee836a435dff",
+      "text": "## Sudo and Passwords\n\nThe live terminal is a **real pty**, so interactive prompts work exactly as in Terminal.app — `sudo` asks for your password *inside the xterm in the browser*, ssh asks for passphrases, and so on. This is the sanctioned way to run privileged one-liners from a wiki page: a wiki *button* can never prompt for escalation, but an embedded terminal can, because it is a genuine tty."
+    },
+    {
+      "type": "markdown",
+      "id": "d3901213dc381287",
       "text": "## Requirements\n\nThe live modes need the pty service from `service/terminal_service.py` included in a FastAPI app bound to `127.0.0.1`:"
     },
     {
       "type": "code",
-      "id": "5003770c925c6d27",
+      "id": "de521f8cd0d4e53d",
       "text": "from terminal_service import router as terminal_router\napp.include_router(terminal_router)"
     },
     {
       "type": "markdown",
-      "id": "6a9f04925f36c189",
-      "text": "## See\n\n- [[Terminal Plugin]] · [[Xterm in Wiki]] · [[About Code Plugin]]"
+      "id": "b4625207772c5944",
+      "text": "## See\n\n- [[Terminal Plugin]] · [[TermFlow Plan]] · [[Xterm in Wiki]] · [[About Code Plugin]]"
     }
   ],
+  "plugin": "terminal",
   "journal": [
     {
       "type": "create",
@@ -75,69 +86,83 @@
         "story": [
           {
             "type": "markdown",
-            "id": "128671b219b015b0",
+            "id": "3c7631f875154c06",
             "text": "The Terminal Plugin puts a live shell inside a wiki page. It is the successor to the shell plugin — same `text` semantics, plus an interactive xterm attached to a named pty session. Full design at [[Terminal Plugin]] on plugin.fedwiki.club."
           },
           {
+            "type": "markdown",
+            "id": "fe5537c308b4e02b",
+            "text": "## Repositories\n\n- GitHub — https://github.com/Hitchhikers-Guide-to-the-Galaxy/wiki-plugin-terminal\n- npm — https://www.npmjs.com/package/wiki-plugin-terminal"
+          },
+          {
             "type": "terminal",
-            "id": "21bff870e385ef5d",
+            "id": "cc55ec87bd9ad79f",
             "text": "echo hello from the terminal plugin\nuname -a"
           },
           {
             "type": "markdown",
-            "id": "9ee1a7e48a9a340b",
+            "id": "339abdf7f798216c",
             "text": "## Modes\n\nThe item above renders display-only when the pty service is unreachable — like a code item, but tinted warning-amber as the cue that this is runnable shell. When the local-first FastAPI service is up, two buttons appear:\n\n- **run** — execute once and capture stdout, stderr and exit code inline. Stateless and reproducible; the output is data the page can keep\n- **terminal** — toggle a live shell in the item with the script *pasted at the prompt, ready to run*. Click again (or **✕**) to hide it; the session stays alive\n\nThe open terminal carries its own controls in the header bar: **paste** re-pastes the script, **⏎** presses Return, **⤢** zooms fullscreen (*esc* restores), **✕** closes. A separate **tab ↗** opens the same session full-bleed in a new tab."
           },
           {
             "type": "markdown",
-            "id": "485a55357fbca879",
+            "id": "7d9bdd6be93dade3",
             "text": "## Item Format"
           },
           {
             "type": "code",
-            "id": "10188b2dcab404e6",
+            "id": "e270d4eabae726b4",
             "text": "{\n  \"type\": \"terminal\",\n  \"text\": \"cd ~/project\\nls | head\",\n  \"session\": \"localhost-admin\",\n  \"service\": \"http://localhost:8000\"\n}"
           },
           {
             "type": "markdown",
-            "id": "41440a125565300a",
+            "id": "c4c1103836c96ea3",
             "text": "`session` names a server-side pty — items and tabs sharing the name share one shell. `service` overrides the FastAPI base url, default `http://localhost:8000`."
           },
           {
             "type": "markdown",
-            "id": "e4cf338b9acaa895",
+            "id": "44a9da568f77ccda",
             "text": "## Formatting Directives\n\nLeading ALL-CAPS lines of the item text set formatting, and are stripped from the displayed, pasted and run script — Ward's convention, as in the frame plugin's `HEIGHT` and the similarity plugin's `LIMIT:`."
           },
           {
             "type": "code",
-            "id": "42802804f6204016",
-            "text": "COLOR: green\nHEIGHT: 320\nFONT: 14\nSESSION: build\necho the script starts here"
+            "id": "4cb74f553e835dc2",
+            "text": "COLOR: green\nHEIGHT: 320\nFONT: 14\nSESSION: build\nRUN\necho the script starts here"
           },
           {
             "type": "markdown",
-            "id": "15d3549919b46f3e",
-            "text": "- **COLOR:** (or **COLOUR:** / **THEME:**) — a named scheme: `dark` (default), `paper` (light), `green` and `amber` (classic phosphor), `solarized`, `solarized-light`, `dracula`, `nord`\n- **HEIGHT:** — terminal area height in px\n- **FONT:** (or **SIZE:**) — font size\n- **SESSION:** — pty session name, overriding the item field"
+            "id": "20bd46f005d420b4",
+            "text": "- **COLOR:** (or **COLOUR:** / **THEME:**) — a named scheme: `dark` (default), `paper` (light), `green` and `amber` (classic phosphor), `solarized`, `solarized-light`, `dracula`, `nord`\n- **HEIGHT:** — terminal area height in px\n- **FONT:** (or **SIZE:**) — font size\n- **SESSION:** — pty session name, overriding the item field\n- **RUN** — show the *run* button (one-shot capture). Off by default: the capture path has no pty, so any script that prompts — `sudo` above all — would hang. Such scripts belong in the live terminal."
           },
           {
             "type": "markdown",
-            "id": "af9790489979ef76",
+            "id": "ea7ff55af6d9ab57",
+            "text": "## Workflows\n\nA terminal item can be a **step in a [[TermFlow Plan|TermFlow]] workflow**. The Terminal plugin registers a workflow *runner* and renders the gated state: while a step's guard is unmet the item is **locked** — no toolbar, no amber tint, just an inert code-style block with a `🔒 needs:` hint — and unlocks once the guard passes. When a workflow runs a step, its captured result is stored on the item and recorded in the page history."
+          },
+          {
+            "type": "markdown",
+            "id": "0419ee836a435dff",
+            "text": "## Sudo and Passwords\n\nThe live terminal is a **real pty**, so interactive prompts work exactly as in Terminal.app — `sudo` asks for your password *inside the xterm in the browser*, ssh asks for passphrases, and so on. This is the sanctioned way to run privileged one-liners from a wiki page: a wiki *button* can never prompt for escalation, but an embedded terminal can, because it is a genuine tty."
+          },
+          {
+            "type": "markdown",
+            "id": "d3901213dc381287",
             "text": "## Requirements\n\nThe live modes need the pty service from `service/terminal_service.py` included in a FastAPI app bound to `127.0.0.1`:"
           },
           {
             "type": "code",
-            "id": "5003770c925c6d27",
+            "id": "de521f8cd0d4e53d",
             "text": "from terminal_service import router as terminal_router\napp.include_router(terminal_router)"
           },
           {
             "type": "markdown",
-            "id": "6a9f04925f36c189",
-            "text": "## See\n\n- [[Terminal Plugin]] · [[Xterm in Wiki]] · [[About Code Plugin]]"
+            "id": "b4625207772c5944",
+            "text": "## See\n\n- [[Terminal Plugin]] · [[TermFlow Plan]] · [[Xterm in Wiki]] · [[About Code Plugin]]"
           }
         ]
       },
-      "date": 1781198427000,
+      "date": 1781352795903,
       "certificate": "from marvin"
     }
-  ],
-  "plugin": "terminal"
+  ]
 }

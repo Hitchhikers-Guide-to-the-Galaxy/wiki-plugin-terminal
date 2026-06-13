@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { expand, sessionName, wsUrl, makeCaptureScanner, isLocalHost,
-  parseDirectives, schemeFor, SCHEMES } from '../src/client/helpers.js'
+  parseDirectives, schemeFor, SCHEMES, attachResult } from '../src/client/helpers.js'
 
 test('expand escapes html', () => {
   assert.equal(expand('a < b & c > d'), 'a &lt; b &amp; c &gt; d')
@@ -104,4 +104,13 @@ test('a script line starting RUNNER is not the RUN flag', () => {
   const r = parseDirectives('RUNNER=x ./go')
   assert.equal(r.run, undefined)
   assert.equal(r.script, 'RUNNER=x ./go')
+})
+
+test('attachResult embeds a run result for journaling + later rendering', () => {
+  const item = { type: 'terminal', id: 'abc', text: 'echo hi' }
+  const result = { stdout: 'hi\n', stderr: '', exit: 0, date: 1781000000000 }
+  const withResult = attachResult(item, result)
+  // original untouched; result carried so emit() can re-render it after a rewind
+  assert.deepEqual(item, { type: 'terminal', id: 'abc', text: 'echo hi' })
+  assert.deepEqual(withResult, { type: 'terminal', id: 'abc', text: 'echo hi', result })
 })

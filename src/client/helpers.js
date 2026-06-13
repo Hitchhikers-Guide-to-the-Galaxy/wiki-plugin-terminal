@@ -114,6 +114,11 @@ export const schemeFor = name => {
 
 export const wsUrl = (base, path) => base.replace(/^http/, 'ws') + path
 
+// A workflow records each step's outcome on the source item so it can be
+// journaled (a native wiki edit) and re-rendered after a reload or a history
+// rewind. Pure: the caller supplies the result (incl. its date).
+export const attachResult = (item, result) => ({ ...item, result })
+
 // OSC 133 (FinalTerm / shell integration) stream scanner.
 //
 // The spawned zsh emits \e]133;C\a when command output starts and

@@ -38,7 +38,7 @@ import '@xterm/xterm/css/xterm.css'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
 import { expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, isLocalHost,
-  parseDirectives, schemeFor } from './helpers.js'
+  parseDirectives, schemeFor, attachResult } from './helpers.js'
 
 hljs.registerLanguage('bash', bash)
 
@@ -76,6 +76,16 @@ const STYLE = `
   .terminal-item .terminal-panel.zoomed { position:fixed; inset:0; z-index:9999;
     margin:0; border-radius:0; display:flex; flex-direction:column }
   .terminal-item .terminal-panel.zoomed .terminal-host { flex:1; height:auto }
+
+  /* workflow-gated step (wiki-plugin-termflow locked this item via a
+     'workflow-lock' event): no toolbar, no amber tint — an inert code-style
+     block with a hint, so it reads like a plain code item until unlocked. */
+  .terminal-item .wf-lock-hint { display:none; margin-top:3px; font-size:11px; color:#999 }
+  .terminal-item .wf-lock-hint::before { content:'🔒 ' }
+  .terminal-item.wf-locked .terminal-script { background:transparent;
+    border-left:3px solid #ddd; opacity:.7 }
+  .terminal-item.wf-locked .terminal-tools { display:none }
+  .terminal-item.wf-locked .wf-lock-hint { display:block }
 `
 
 // Stylesheets to load: the plugin's own bundle (xterm.css — without it the
@@ -116,6 +126,7 @@ const emit = ($item, item) => {
     <div class="terminal-item">
       <pre class="terminal-script hljs"><code class="hljs language-bash">${highlightScript(script)}</code></pre>
       <div class="terminal-tools"></div>
+      <div class="wf-lock-hint"></div>
       <div class="terminal-reply"></div>
       <div class="terminal-panel">
         <div class="terminal-bar">
@@ -131,6 +142,9 @@ const emit = ($item, item) => {
       </div>
     </div>
   `)
+  // A workflow may have stored this step's last result on the item; render it so
+  // a reload or a history rewind shows what the step produced (lab notebook).
+  if (item.result) renderReply($item, item.result)
 }
 
 const renderReply = ($item, { stdout, stderr, exit }) => {
@@ -142,6 +156,7 @@ const renderReply = ($item, { stdout, stderr, exit }) => {
 }
 
 const run = async ($item, script, base) => {
+  $item.trigger('terminal-run', { script })
   $item.find('.terminal-reply').html('<span class="exit">running…</span>')
   try {
     const res = await fetch(`${base}/terminal/run`, {
@@ -152,6 +167,31 @@ const run = async ($item, script, base) => {
     renderReply($item, await res.json())
   } catch (err) {
     renderReply($item, { stdout: '', stderr: String(err), exit: -1 })
+  }
+}
+
+// Workflow runner: how wiki-plugin-termflow runs a `terminal` step. It executes
+// the step body (already the stripped script) via /terminal/run and renders the
+// captured output inline, returning the outcome to the step-through.
+const runStep = async ({ item, $item, body }) => {
+  const base = serviceBase(item)
+  $item.trigger('terminal-run', { script: body })
+  $item.find('.terminal-reply').html('<span class="exit">running…</span>')
+  try {
+    const res = await fetch(`${base}/terminal/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: body || '' }),
+    })
+    const data = await res.json()
+    renderReply($item, data)
+    // Return the item carrying its result so the workflow can journal a native
+    // edit — that's what records the step in the page history for rewind.
+    const result = { stdout: data.stdout, stderr: data.stderr, exit: data.exit, date: Date.now() }
+    return { ok: data.exit === 0, exit: data.exit, output: data.stdout, item: attachResult(item, result) }
+  } catch (err) {
+    renderReply($item, { stdout: '', stderr: String(err), exit: -1 })
+    return { ok: false, exit: -1, output: String(err) }
   }
 }
 
@@ -284,6 +324,18 @@ const bind = async ($item, item) => {
   const $panel = $item.find('.terminal-panel')
   $panel.css('background', schemeFor(opts.scheme).background)
 
+  // Workflow gating (wiki-plugin-termflow). A workflow item on the page may lock
+  // this step until its guard passes; we render the lock and otherwise stay a
+  // normal terminal item. Listen for the dispatched event, and apply any verdict
+  // already standing (the workflow may have bound and evaluated before us).
+  const applyLock = st => {
+    $box.toggleClass('wf-locked', !!(st && st.locked))
+    $item.find('.wf-lock-hint').text(st && st.guard ? `needs: ${st.guard}` : 'locked')
+  }
+  $item.on('workflow-lock', (_e, st) => applyLock(st))
+  const standing = window.workflow?.getLock?.($item.parents('.page').data('key') || 'page', item.id)
+  if (standing) applyLock(standing)
+
   // run — one-shot capture, no terminal UI
   $tools.find('.t-run').on('click', () => run($item, script, base))
 
@@ -331,4 +383,18 @@ const bind = async ($item, item) => {
   )
 }
 
-if (typeof window !== 'undefined') window.plugins.terminal = { emit, bind }
+// Register the terminal adapter on the shared workflow registry (idempotent;
+// wiki-plugin-termflow may or may not be present). This lets a workflow item
+// run terminal steps and read their scripts.
+const registerWorkflowAdapter = () => {
+  const w = (window.workflow = window.workflow || {})
+  w.runners = w.runners || {}
+  w.scriptOf = w.scriptOf || {}
+  w.runners.terminal = w.runners.terminal || runStep
+  w.scriptOf.terminal = w.scriptOf.terminal || (item => parseDirectives(item.text).script)
+}
+
+if (typeof window !== 'undefined') {
+  window.plugins.terminal = { emit, bind }
+  registerWorkflowAdapter()
+}

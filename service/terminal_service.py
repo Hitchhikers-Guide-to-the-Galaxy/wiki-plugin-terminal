@@ -140,6 +140,36 @@ def run(req: RunRequest):
         return {"stdout": "", "stderr": f"timed out after {req.timeout}s", "exit": -1}
 
 
+class Guard(BaseModel):
+    id: str
+    test: str
+
+
+class CheckRequest(BaseModel):
+    guards: list[Guard]
+    timeout: int = 10
+
+
+@router.post("/check")
+def check(req: CheckRequest):
+    """Evaluate workflow guards: a step is unlocked iff its test exits 0.
+
+    Used on page load to decide which terminal items to lock. Output is
+    discarded — only the exit status matters.
+    """
+    results: dict[str, bool] = {}
+    for g in req.guards:
+        try:
+            proc = subprocess.run(
+                ["zsh", "-c", g.test],
+                capture_output=True, timeout=req.timeout,
+            )
+            results[g.id] = proc.returncode == 0
+        except subprocess.TimeoutExpired:
+            results[g.id] = False
+    return {"results": results}
+
+
 @router.websocket("/pty/{session}")
 async def attach(ws: WebSocket, session: str):
     if not SESSION_NAME.match(session) or not origin_allowed(ws):
