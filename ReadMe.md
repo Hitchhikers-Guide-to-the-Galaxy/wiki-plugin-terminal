@@ -41,7 +41,9 @@ Design: [Terminal Plugin](https://plugin.fedwiki.club/terminal-plugin.html)
     #   from terminal_service import router as terminal_router
     #   app.include_router(terminal_router)
 
-Or standalone: `uvicorn terminal_service:app --port 8000` (bind 127.0.0.1).
+Or standalone: `uvicorn terminal_service:app --port 4248` (bind 127.0.0.1).
+
+The client reaches the service as `http://terminal.localhost` — a Caddy route to port 4248, per the hitchhiker 42xx port policy. Port 8000 was abandoned: Bitfocus Companion owns it.
 
 ## Succession
 

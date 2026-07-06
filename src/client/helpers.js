@@ -10,8 +10,10 @@ export const expand = text =>
 export const sessionName = (item, override) =>
   (override || item.session || `item-${item.id}`).replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 64)
 
+// Default service is reached by name through Caddy (hitchhiker port policy:
+// services live on 42xx behind a .localhost name, never a hardcoded port).
 export const serviceBase = item =>
-  (item.service || 'http://localhost:8000').replace(/\/$/, '')
+  (item.service || 'http://terminal.localhost').replace(/\/$/, '')
 
 // The live terminal is local-first only. Anywhere else — a public server —
 // the plugin must behave exactly like the code plugin: display the script and

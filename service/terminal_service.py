@@ -7,7 +7,7 @@ An APIRouter so it can be included in an existing local-first app:
 
 or run standalone:
 
-    uvicorn terminal_service:app --port 8000
+    uvicorn terminal_service:app --port 4248
 
 Endpoints (all under /terminal):
     GET  /terminal/health           service check; lists live sessions
@@ -33,6 +33,7 @@ import termios
 import pty as pty_module
 
 from fastapi import APIRouter, FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -226,6 +227,13 @@ def page(session: str = Query("default")):
     return HTMLResponse(PAGE_HTML.format(session=session))
 
 
-# standalone: uvicorn terminal_service:app --port 8000
+# standalone: uvicorn terminal_service:app --port 4248
 app = FastAPI()
+# Browser clients probe /terminal/health cross-origin (the wiki page and the
+# service live on different local origins); without CORS the plugin silently
+# degrades to display-only. Local-first safety is the 127.0.0.1 bind plus the
+# websocket origin check, not CORS.
+app.add_middleware(
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+)
 app.include_router(router)

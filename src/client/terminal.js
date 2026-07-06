@@ -6,7 +6,7 @@
 //   type: "terminal",
 //   text: "the script",                  // same semantics as a shell item
 //   session: "localhost-admin",          // optional named pty; shared when named
-//   service: "http://localhost:8000"     // optional FastAPI service override
+//   service: "http://terminal.localhost" // optional FastAPI service override
 // }
 //
 // Leading ALL-CAPS lines of the text are formatting directives (see

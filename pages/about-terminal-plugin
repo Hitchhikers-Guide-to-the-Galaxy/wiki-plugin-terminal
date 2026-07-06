@@ -29,12 +29,12 @@
     {
       "type": "code",
       "id": "e270d4eabae726b4",
-      "text": "{\n  \"type\": \"terminal\",\n  \"text\": \"cd ~/project\\nls | head\",\n  \"session\": \"localhost-admin\",\n  \"service\": \"http://localhost:8000\"\n}"
+      "text": "{\n  \"type\": \"terminal\",\n  \"text\": \"cd ~/project\\nls | head\",\n  \"session\": \"localhost-admin\",\n  \"service\": \"http://terminal.localhost\"\n}"
     },
     {
       "type": "markdown",
       "id": "c4c1103836c96ea3",
-      "text": "`session` names a server-side pty — items and tabs sharing the name share one shell. `service` overrides the FastAPI base url, default `http://localhost:8000`."
+      "text": "`session` names a server-side pty — items and tabs sharing the name share one shell. `service` overrides the FastAPI base url, default `http://terminal.localhost`."
     },
     {
       "type": "markdown",
@@ -112,12 +112,12 @@
           {
             "type": "code",
             "id": "e270d4eabae726b4",
-            "text": "{\n  \"type\": \"terminal\",\n  \"text\": \"cd ~/project\\nls | head\",\n  \"session\": \"localhost-admin\",\n  \"service\": \"http://localhost:8000\"\n}"
+            "text": "{\n  \"type\": \"terminal\",\n  \"text\": \"cd ~/project\\nls | head\",\n  \"session\": \"localhost-admin\",\n  \"service\": \"http://terminal.localhost\"\n}"
           },
           {
             "type": "markdown",
             "id": "c4c1103836c96ea3",
-            "text": "`session` names a server-side pty — items and tabs sharing the name share one shell. `service` overrides the FastAPI base url, default `http://localhost:8000`."
+            "text": "`session` names a server-side pty — items and tabs sharing the name share one shell. `service` overrides the FastAPI base url, default `http://terminal.localhost`."
           },
           {
             "type": "markdown",
