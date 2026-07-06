@@ -52,12 +52,13 @@ const THEME = schemeFor('dark')
 
 const STYLE = `
   .terminal-item .terminal-script { background:#fff8e6; border-left:3px solid #ffb000 }
-  .terminal-item .terminal-script code.hljs { background:transparent }
+  .terminal-item .terminal-script code.hljs { background:transparent;
+    white-space:pre-wrap; padding:6px }
   .terminal-item .terminal-tools { margin-top:4px }
   .terminal-item .terminal-tools button { margin-right:4px; font-size:11px }
   .terminal-item.term-open .terminal-tools .t-term { background:#333; color:#fff }
   .terminal-item .terminal-reply { margin-top:4px }
-  .terminal-item .terminal-reply pre.hljs { margin:0 }
+  .terminal-item .terminal-reply pre.hljs { margin:0; padding:6px }
   .terminal-item .terminal-reply pre.stderr code { color:#f14c4c }
   .terminal-item .terminal-reply .exit { font-size:10px; color:#888 }
   .terminal-item .terminal-panel { display:none; margin-top:6px; border-radius:4px;
@@ -86,12 +87,25 @@ const STYLE = `
     border-left:3px solid #ddd; opacity:.7 }
   .terminal-item.wf-locked .terminal-tools { display:none }
   .terminal-item.wf-locked .wf-lock-hint { display:block }
+
+  /* bash token palette, scoped to terminal items. Self-contained on purpose:
+     the code plugin only ships highlight.css from 0.6.0, so borrowing it
+     404s on farms with an older wiki core. Scoping keeps a newer code
+     plugin's own theme untouched. */
+  .terminal-item .hljs-comment { color:#6a737d }
+  .terminal-item .hljs-keyword { color:#d73a49 }
+  .terminal-item .hljs-string { color:#032f62 }
+  .terminal-item .hljs-built_in { color:#005cc5 }
+  .terminal-item .hljs-variable, .terminal-item .hljs-template-variable { color:#e36209 }
+  .terminal-item .hljs-number, .terminal-item .hljs-literal { color:#005cc5 }
+  .terminal-item .hljs-meta { color:#032f62 }
+  .terminal-item .hljs-title, .terminal-item .hljs-function { color:#6f42c1 }
 `
 
-// Stylesheets to load: the plugin's own bundle (xterm.css — without it the
-// hidden helper textarea renders as a visible box) and the code plugin's
-// highlight.css theme so the script and captured output match a code item.
-const LINK_CSS = ['/plugins/terminal/terminal.css', '/plugins/code/highlight.css']
+// Stylesheets to load: only the plugin's own bundle (xterm.css — without it
+// the hidden helper textarea renders as a visible box). Script and captured
+// output styling is fully self-contained in STYLE above.
+const LINK_CSS = ['/plugins/terminal/terminal.css']
 
 const ensureAssets = () => {
   if (!document.getElementById('terminal-plugin-style')) {
