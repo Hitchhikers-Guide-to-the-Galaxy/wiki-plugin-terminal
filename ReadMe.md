@@ -57,8 +57,17 @@ succession declarations from plugins into `/system/factories.json`.
 
 The pty service is remote code execution by design. It binds to
 `127.0.0.1`, checks websocket `Origin` against local wiki hosts
-(`localhost`, `*.localhost`, `*.fish`), and is simply absent on public
-servers, where the plugin renders display-only.
+(`localhost`, `*.localhost`), and is simply absent on public servers,
+where the plugin renders display-only.
+
+The live toolbar activates in two local contexts: when the wiki's own
+origin is local, or when the page is served by the **local mirror farm**
+(the `wiki-security-author` client sets `window.isLocalMirror`, which is
+never present on a real live site). In the mirror case the page carries
+a real public domain name, so the service base follows the page protocol
+— `https://terminal.localhost` / `wss://` on an https mirror page — to
+avoid mixed-content blocking. The health probe remains the real backstop:
+no service, no toolbar.
 
 ## License
 

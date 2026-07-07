@@ -37,7 +37,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
-import { expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, isLocalHost,
+import { expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, isLocalContext,
   parseDirectives, schemeFor, attachResult } from './helpers.js'
 
 hljs.registerLanguage('bash', bash)
@@ -188,7 +188,7 @@ const run = async ($item, script, base) => {
 // the step body (already the stripped script) via /terminal/run and renders the
 // captured output inline, returning the outcome to the step-through.
 const runStep = async ({ item, $item, body }) => {
-  const base = serviceBase(item)
+  const base = serviceBase(item, window.location.protocol)
   $item.trigger('terminal-run', { script: body })
   $item.find('.terminal-reply').html('<span class="exit">running…</span>')
   try {
@@ -306,10 +306,12 @@ const bind = async ($item, item) => {
   $item.find('.terminal-script').on('dblclick', () => wiki.textEditor($item, item))
 
   // Local-first only. On a public server the plugin is inert — just the code
-  // display, no toolbar, no network probe — exactly like the code plugin.
-  if (!isLocalHost(window.location.hostname)) return
+  // display, no toolbar, no network probe — exactly like the code plugin. The
+  // local mirror farm counts as local even though it serves public domain
+  // names (window.isLocalMirror, set by the wiki-security-author client).
+  if (!isLocalContext(window.location.hostname, window.isLocalMirror)) return
 
-  const base = serviceBase(item)
+  const base = serviceBase(item, window.location.protocol)
   if (!(await healthy(base))) return // service down on localhost: display only
 
   // Guard against fedwiki binding the *same* rendered item twice (the async

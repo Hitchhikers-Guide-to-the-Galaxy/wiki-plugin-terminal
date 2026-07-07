@@ -1,17 +1,36 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { expand, sessionName, wsUrl, makeCaptureScanner, isLocalHost,
-  parseDirectives, schemeFor, SCHEMES, attachResult } from '../src/client/helpers.js'
+import { expand, sessionName, wsUrl, makeCaptureScanner, isLocalHost, isLocalContext,
+  serviceBase, parseDirectives, schemeFor, SCHEMES, attachResult } from '../src/client/helpers.js'
 
 test('expand escapes html', () => {
   assert.equal(expand('a < b & c > d'), 'a &lt; b &amp; c &gt; d')
 })
 
 test('isLocalHost recognises local origins, rejects servers', () => {
-  for (const h of ['localhost', '127.0.0.1', '::1', 'wiki.localhost', 'private.fish'])
+  for (const h of ['localhost', '127.0.0.1', '::1', 'wiki.localhost'])
     assert.equal(isLocalHost(h), true, h)
-  for (const h of ['plugin.fedwiki.club', 'hitchhikers.earth', 'example.com', 'notlocalhost.com'])
+  // .fish is an ordinary public TLD — not local (superseded old spec)
+  for (const h of ['plugin.fedwiki.club', 'hitchhikers.earth', 'example.com', 'private.fish'])
     assert.equal(isLocalHost(h), false, h)
+})
+
+test('isLocalContext: local hostname OR mirror flag opens live behaviour', () => {
+  // local origin, no flag → live
+  assert.equal(isLocalContext('wiki.localhost', undefined), true)
+  // public domain served by the mirror (window.isLocalMirror set) → live
+  assert.equal(isLocalContext('media.anarchive.earth', true), true)
+  // public domain, no flag → inert (real live site)
+  assert.equal(isLocalContext('media.anarchive.earth', undefined), false)
+  assert.equal(isLocalContext('example.com', false), false)
+})
+
+test('serviceBase follows page protocol, honours explicit service', () => {
+  assert.equal(serviceBase({}, 'http:'), 'http://terminal.localhost')
+  assert.equal(serviceBase({}, 'https:'), 'https://terminal.localhost')
+  assert.equal(serviceBase({}), 'http://terminal.localhost') // default protocol
+  // an explicit item.service (full URL) always wins, trailing slash trimmed
+  assert.equal(serviceBase({ service: 'http://box.localhost/' }, 'https:'), 'http://box.localhost')
 })
 
 test('sessionName defaults to item id and sanitizes', () => {

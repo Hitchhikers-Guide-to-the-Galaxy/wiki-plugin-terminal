@@ -12,8 +12,16 @@ export const sessionName = (item, override) =>
 
 // Default service is reached by name through Caddy (hitchhiker port policy:
 // services live on 42xx behind a .localhost name, never a hardcoded port).
-export const serviceBase = item =>
-  (item.service || 'http://terminal.localhost').replace(/\/$/, '')
+// The scheme follows the PAGE's protocol: an https page (the local mirror
+// serves real domain names over Caddy's internal TLS) must not call an http
+// service — the browser blocks that as mixed content. Caddy answers
+// terminal.localhost on both http and https, so mirroring the page protocol
+// works either way. An explicit item.service (full URL) always wins.
+export const serviceBase = (item, protocol = 'http:') => {
+  if (item.service) return item.service.replace(/\/$/, '')
+  const scheme = protocol === 'https:' ? 'https' : 'http'
+  return `${scheme}://terminal.localhost`
+}
 
 // The live terminal is local-first only. Anywhere else — a public server —
 // the plugin must behave exactly like the code plugin: display the script and
@@ -23,8 +31,16 @@ export const isLocalHost = hostname =>
   hostname === '127.0.0.1' ||
   hostname === '::1' ||
   hostname === '[::1]' ||
-  hostname.endsWith('.localhost') ||
-  hostname.endsWith('.fish')
+  hostname.endsWith('.localhost')
+
+// Two contexts count as local. Either the wiki's own origin is local
+// (localhost / *.localhost), OR the page was served by the local mirror farm,
+// which sets window.isLocalMirror via the wiki-security-author client. The
+// mirror serves real public domain names, so the hostname can't reveal it —
+// the flag carries the fact, and live sites never load that client, so it is
+// absent there. Kept import-free (isMirror passed in) so node --test can run it.
+export const isLocalContext = (hostname, isMirror) =>
+  isLocalHost(hostname) || Boolean(isMirror)
 
 // ── Formatting directives ────────────────────────────────────────────────────
 //

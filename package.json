@@ -1,6 +1,6 @@
 {
   "name": "wiki-plugin-terminal",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Federated Wiki plugin — a live shell terminal in the page; successor to wiki-plugin-shell",
   "keywords": [
     "wiki",
