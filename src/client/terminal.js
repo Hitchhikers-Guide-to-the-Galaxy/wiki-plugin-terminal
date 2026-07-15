@@ -79,12 +79,13 @@ const STYLE = `
   .terminal-item .terminal-panel.zoomed .terminal-host { flex:1; height:auto }
 
   /* workflow-gated step (wiki-plugin-termflow locked this item via a
-     'workflow-lock' event): no toolbar, no amber tint — an inert code-style
-     block with a hint, so it reads like a plain code item until unlocked. */
-  .terminal-item .wf-lock-hint { display:none; margin-top:3px; font-size:11px; color:#999 }
+     'workflow-lock' event): no toolbar. A red left bar and faint red tint
+     mark it clearly as a *blocked* terminal step — distinct from a runnable
+     step's amber bar — until its guard passes and it unlocks. */
+  .terminal-item .wf-lock-hint { display:none; margin-top:3px; font-size:11px; color:#b03a3a }
   .terminal-item .wf-lock-hint::before { content:'🔒 ' }
-  .terminal-item.wf-locked .terminal-script { background:transparent;
-    border-left:3px solid #ddd; opacity:.7 }
+  .terminal-item.wf-locked .terminal-script { background:#fdecec;
+    border-left:3px solid #d64545; opacity:.9 }
   .terminal-item.wf-locked .terminal-tools { display:none }
   .terminal-item.wf-locked .wf-lock-hint { display:block }
 
