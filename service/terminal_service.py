@@ -32,14 +32,46 @@ import termios
 
 import pty as pty_module
 
-from fastapi import APIRouter, FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/terminal")
 
 SESSION_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+# ── ssh targets ───────────────────────────────────────────────────────────────
+#
+# A HOST/SSH directive routes a run through ssh on the named host, so a wiki page
+# can drive commands on another machine (e.g. pi5.local) — but the pty ssh's out
+# with the *service user's own key* (BatchMode = key-only, no password prompt),
+# and only to an allowlisted host, so an arbitrary destination can't be injected
+# by a page. Configurable via WIKI_TERMINAL_SSH_HOSTS (comma-separated).
+SSH_HOSTS = {
+    h.strip()
+    for h in os.environ.get("WIKI_TERMINAL_SSH_HOSTS", "pi5.local,MacMini.local").split(",")
+    if h.strip()
+}
+
+SSH_TARGET = re.compile(r"^(?:([A-Za-z0-9_.-]+)@)?([A-Za-z0-9_.-]+)$")
+
+
+def resolve_ssh_target(host: str | None) -> str | None:
+    """Validate a HOST/SSH directive value to an ssh destination, or None.
+
+    Accepts `host` or `user@host`; the host part must be in the allowlist.
+    Returns the sanitized `user@host` (or `host`), else None (reject).
+    """
+    if not host:
+        return None
+    m = SSH_TARGET.match(host.strip())
+    if not m:
+        return None
+    user, hostname = m.group(1), m.group(2)
+    if hostname not in SSH_HOSTS:
+        return None
+    return f"{user}@{hostname}" if user else hostname
 
 # OSC 133 shell-integration hooks so clients can capture per-command output.
 # Written to ZDOTDIR so the spawned zsh picks them up without touching ~/.zshrc.
@@ -55,7 +87,7 @@ sessions: dict[str, "Session"] = {}
 class Session:
     """One forked zsh on a pty; many websocket clients may attach."""
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, ssh_target: str | None = None):
         zdotdir = os.path.expanduser("~/.cache/wiki-plugin-terminal")
         os.makedirs(zdotdir, exist_ok=True)
         with open(os.path.join(zdotdir, ".zshrc"), "w") as f:
@@ -65,6 +97,11 @@ class Session:
         if pid == 0:  # child
             os.environ["TERM"] = "xterm-256color"
             os.environ["ZDOTDIR"] = zdotdir
+            if ssh_target:
+                # ssh out with the service user's key; BatchMode = key-only, no
+                # password prompt. The remote shell won't source our OSC-133
+                # hooks, so per-command capture is local-shell only.
+                os.execvp("ssh", ["ssh", "-tt", "-o", "BatchMode=yes", ssh_target])
             os.execvp("zsh", ["zsh"])
 
         self.name, self.pid, self.fd = name, pid, fd
@@ -106,14 +143,28 @@ class Session:
         sessions.pop(self.name, None)
 
 
+def _origin_host(origin: str) -> str:
+    return origin.split("//")[-1].split(":")[0].split("/")[0]
+
+
+def _local_host(host: str) -> bool:
+    # Only loopback-local origins may reach the pty. NOT *.fish: a public .fish
+    # page must never instruct the local shell — trusted remote pages run via
+    # the *viewer's own* localhost origin (arming happens client-side), so the
+    # service only ever legitimately sees a localhost/*.localhost Origin.
+    return host in ("localhost", "127.0.0.1", "::1") or host.endswith(".localhost")
+
+
 def origin_allowed(ws: WebSocket) -> bool:
-    origin = ws.headers.get("origin", "")
-    host = origin.split("//")[-1].split(":")[0].split("/")[0]
-    return (
-        host in ("localhost", "127.0.0.1")
-        or host.endswith(".localhost")
-        or host.endswith(".fish")
-    )
+    return _local_host(_origin_host(ws.headers.get("origin", "")))
+
+
+def http_origin_allowed(request: Request) -> bool:
+    # A missing Origin is a non-browser local caller or a same-origin request —
+    # the 127.0.0.1 bind already contains those. A *present* cross-origin header
+    # from a page we don't serve is the drive-by-RCE risk: reject it.
+    origin = request.headers.get("origin")
+    return origin is None or _local_host(_origin_host(origin))
 
 
 @router.get("/health")
@@ -124,17 +175,32 @@ def health():
 class RunRequest(BaseModel):
     text: str
     cwd: str | None = None
+    host: str | None = None
     timeout: int = 30
 
 
 @router.post("/run")
-def run(req: RunRequest):
+def run(req: RunRequest, request: Request):
     """Ward's shell-plugin model: run, capture, return structured output."""
+    if not http_origin_allowed(request):
+        return JSONResponse(
+            {"stdout": "", "stderr": "forbidden origin", "exit": -1}, status_code=403
+        )
     cwd = os.path.expanduser(req.cwd) if req.cwd else None
+    if req.host:
+        # A HOST directive ssh's out with the service user's key, to an
+        # allowlisted host only. The remote shell reads the script on stdin's -c.
+        target = resolve_ssh_target(req.host)
+        if target is None:
+            return {"stdout": "", "stderr": f"host not allowed: {req.host}", "exit": -1}
+        # Pass the script as one remote command; ssh runs it through the remote
+        # user's own login shell (the Pi runs bash, not zsh — don't assume zsh).
+        cmd = ["ssh", "-o", "BatchMode=yes", target, req.text]
+    else:
+        cmd = ["zsh", "-c", req.text]
     try:
         proc = subprocess.run(
-            ["zsh", "-c", req.text],
-            capture_output=True, text=True, timeout=req.timeout, cwd=cwd,
+            cmd, capture_output=True, text=True, timeout=req.timeout, cwd=cwd,
         )
         return {"stdout": proc.stdout, "stderr": proc.stderr, "exit": proc.returncode}
     except subprocess.TimeoutExpired:
@@ -152,12 +218,14 @@ class CheckRequest(BaseModel):
 
 
 @router.post("/check")
-def check(req: CheckRequest):
+def check(req: CheckRequest, request: Request):
     """Evaluate workflow guards: a step is unlocked iff its test exits 0.
 
     Used on page load to decide which terminal items to lock. Output is
     discarded — only the exit status matters.
     """
+    if not http_origin_allowed(request):
+        return JSONResponse({"results": {}}, status_code=403)
     results: dict[str, bool] = {}
     for g in req.guards:
         try:
@@ -172,14 +240,19 @@ def check(req: CheckRequest):
 
 
 @router.websocket("/pty/{session}")
-async def attach(ws: WebSocket, session: str):
-    if not SESSION_NAME.match(session) or not origin_allowed(ws):
+async def attach(ws: WebSocket, session: str, host: str | None = Query(None)):
+    target = resolve_ssh_target(host) if host else None
+    if (
+        not SESSION_NAME.match(session)
+        or not origin_allowed(ws)
+        or (host and target is None)  # a HOST was asked for but isn't allowed
+    ):
         await ws.close(code=4403)
         return
     await ws.accept()
     live = sessions.get(session)
     if live is None:
-        live = sessions[session] = Session(session)
+        live = sessions[session] = Session(session, target)
     live.clients.add(ws)
     try:
         while True:
@@ -210,7 +283,7 @@ PAGE_HTML = """<!doctype html>
   term.loadAddon(fit)
   term.open(document.getElementById('term'))
   fit.fit()
-  const ws = new WebSocket(`ws://${{location.host}}/terminal/pty/{session}`)
+  const ws = new WebSocket(`ws://${{location.host}}/terminal/pty/{session}{hostq}`)
   ws.binaryType = 'arraybuffer'
   ws.onmessage = e => term.write(new Uint8Array(e.data))
   ws.onopen = () => ws.send(JSON.stringify({{type:'resize', cols:term.cols, rows:term.rows}}))
@@ -221,19 +294,27 @@ PAGE_HTML = """<!doctype html>
 
 
 @router.get("/page")
-def page(session: str = Query("default")):
+def page(session: str = Query("default"), host: str | None = Query(None)):
     if not SESSION_NAME.match(session):
         return HTMLResponse("bad session name", status_code=400)
-    return HTMLResponse(PAGE_HTML.format(session=session))
+    target = resolve_ssh_target(host) if host else None
+    if host and target is None:
+        return HTMLResponse("host not allowed", status_code=403)
+    hostq = f"?host={target}" if target else ""
+    return HTMLResponse(PAGE_HTML.format(session=session, hostq=hostq))
 
 
 # standalone: uvicorn terminal_service:app --port 4248
 app = FastAPI()
 # Browser clients probe /terminal/health cross-origin (the wiki page and the
 # service live on different local origins); without CORS the plugin silently
-# degrades to display-only. Local-first safety is the 127.0.0.1 bind plus the
-# websocket origin check, not CORS.
+# degrades to display-only. Restrict CORS to local origins (localhost /
+# *.localhost / loopback) so a public page can't drive the pty cross-origin —
+# the loopback bind plus the per-request Origin checks are the real backstop.
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    CORSMiddleware,
+    allow_origin_regex=r"^https?://(([a-z0-9-]+\.)*localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 app.include_router(router)

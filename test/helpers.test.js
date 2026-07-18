@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { expand, sessionName, wsUrl, makeCaptureScanner, isLocalHost, isLocalContext,
-  serviceBase, parseDirectives, schemeFor, SCHEMES, attachResult } from '../src/client/helpers.js'
+  isTrustedAuthor, originTrust, serviceBase, parseDirectives, schemeFor, SCHEMES,
+  attachResult } from '../src/client/helpers.js'
 
 test('expand escapes html', () => {
   assert.equal(expand('a < b & c > d'), 'a &lt; b &amp; c &gt; d')
@@ -23,6 +24,30 @@ test('isLocalContext: local hostname OR mirror flag opens live behaviour', () =>
   // public domain, no flag → inert (real live site)
   assert.equal(isLocalContext('media.anarchive.earth', undefined), false)
   assert.equal(isLocalContext('example.com', false), false)
+})
+
+test('isTrustedAuthor matches an origin against the vouched list (array or Set)', () => {
+  assert.equal(isTrustedAuthor('bot.pi5', ['bot.pi5']), true)
+  assert.equal(isTrustedAuthor('bot.pi5', new Set(['bot.pi5', 'other'])), true)
+  assert.equal(isTrustedAuthor('evil.example', ['bot.pi5']), false)
+  // no origin, or no/empty list → never trusted
+  assert.equal(isTrustedAuthor('', ['bot.pi5']), false)
+  assert.equal(isTrustedAuthor(undefined, ['bot.pi5']), false)
+  assert.equal(isTrustedAuthor('bot.pi5', undefined), false)
+  assert.equal(isTrustedAuthor('bot.pi5', []), false)
+})
+
+test('originTrust classifies a page by its origin site', () => {
+  // the viewer's own page (local origin, no flag) → full live behaviour
+  assert.equal(originTrust('one.localhost', undefined, []), 'local')
+  assert.equal(originTrust('localhost', undefined, undefined), 'local')
+  // public domain served by the local mirror → local
+  assert.equal(originTrust('media.anarchive.earth', true, []), 'local')
+  // a remote page whose origin the viewer trusts → offered (armed)
+  assert.equal(originTrust('bot.pi5', undefined, ['bot.pi5']), 'trusted')
+  // any other remote/public page → inert (display only)
+  assert.equal(originTrust('bot.pi5', undefined, []), 'inert')
+  assert.equal(originTrust('example.com', false, ['bot.pi5']), 'inert')
 })
 
 test('serviceBase follows page protocol, honours explicit service', () => {
@@ -72,6 +97,16 @@ test('parseDirectives strips leading directives, keeps the script intact', () =>
   assert.equal(r.fontSize, 14)
   assert.equal(r.session, 'build')
   assert.equal(r.script, 'echo hi\nSIZE=10 make')
+})
+
+test('parseDirectives reads a HOST directive (SSH: user@host accepted)', () => {
+  assert.equal(parseDirectives('HOST: pi5.local\nhostname').host, 'pi5.local')
+  assert.equal(parseDirectives('HOST pi5\nuname -a').host, 'pi5')
+  const r = parseDirectives('SSH: david@pi5.local\nwhoami')
+  assert.equal(r.host, 'david@pi5.local')
+  assert.equal(r.script, 'whoami')
+  // a lowercase host= assignment in the script is not a directive
+  assert.equal(parseDirectives('host=pi5\necho hi').host, undefined)
 })
 
 test('parseDirectives leaves plain scripts untouched', () => {

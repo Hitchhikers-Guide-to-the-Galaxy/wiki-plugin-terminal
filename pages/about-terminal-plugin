@@ -44,17 +44,22 @@
     {
       "type": "code",
       "id": "4cb74f553e835dc2",
-      "text": "COLOR: green\nHEIGHT: 320\nFONT: 14\nSESSION: build\nRUN\necho the script starts here"
+      "text": "COLOR: green\nHEIGHT: 320\nFONT: 14\nSESSION: build\nHOST: pi5.local\nRUN\necho the script starts here"
     },
     {
       "type": "markdown",
       "id": "20bd46f005d420b4",
-      "text": "- **COLOR:** (or **COLOUR:** / **THEME:**) — a named scheme: `dark` (default), `paper` (light), `green` and `amber` (classic phosphor), `solarized`, `solarized-light`, `dracula`, `nord`\n- **HEIGHT:** — terminal area height in px\n- **FONT:** (or **SIZE:**) — font size\n- **SESSION:** — pty session name, overriding the item field\n- **RUN** — show the *run* button (one-shot capture). Off by default: the capture path has no pty, so any script that prompts — `sudo` above all — would hang. Such scripts belong in the live terminal."
+      "text": "- **COLOR:** (or **COLOUR:** / **THEME:**) — a named scheme: `dark` (default), `paper` (light), `green` and `amber` (classic phosphor), `solarized`, `solarized-light`, `dracula`, `nord`\n- **HEIGHT:** — terminal area height in px\n- **FONT:** (or **SIZE:**) — font size\n- **SESSION:** — pty session name, overriding the item field\n- **HOST:** (or **SSH:**) — run the script through ssh on the named host instead of the local shell. The local pty ssh's out with *your own key*, to a server-side allowlisted host only: `HOST pi5.local` or `SSH: user@host`\n- **RUN** — show the *run* button (one-shot capture). Off by default: the capture path has no pty, so any script that prompts — `sudo` above all — would hang. Such scripts belong in the live terminal."
     },
     {
       "type": "markdown",
       "id": "ea7ff55af6d9ab57",
-      "text": "## Workflows\n\nA terminal item can be a **step in a [[TermFlow Plan|TermFlow]] workflow**. The Terminal plugin registers a workflow *runner* and renders the gated state: while a step's guard is unmet the item is **locked** — no toolbar, no amber tint, just an inert code-style block with a `🔒 needs:` hint — and unlocks once the guard passes. When a workflow runs a step, its captured result is stored on the item and recorded in the page history."
+      "text": "## Workflows\n\nA terminal item can be a **step in a [[TermFlow Plan]] workflow**. The Terminal plugin registers a workflow *runner* and renders the gated state: while a step's guard is unmet the item is **locked** — no toolbar, no amber tint, just an inert code-style block with a `🔒 needs:` hint — and unlocks once the guard passes. When a workflow runs a step, its captured result is stored on the item and recorded in the page history."
+    },
+    {
+      "type": "markdown",
+      "id": "a0f17e0c11aa5501",
+      "text": "## Where it runs — origin, trust & consent\n\nThe plugin gates on the **origin site of the page an item lives on**, not the address in your browser. In a federated lineup every page remembers its home site, so three states are possible.\n\n- **local** — your own page (a `localhost` site, or the offline mirror): the full live toolbar\n- **trusted** — a page from a *remote* site you have vouched for (`window.trustedAuthors`): a single **run · from <site>** button, run on *your own* pty, **never automatically**\n- **inert** — any other public or remote page: display-only, like a code item\n\nA `HOST` directive lets an item ssh onward to an allowlisted host with your own key, so a wiki page can drive a command on another machine with no shell exposed there. Vouch for an author with `window.trustAuthor('bot.pi5')`. The pty service refuses cross-origin callers it does not serve, restricts CORS to local origins, and allowlists `HOST` targets. Full model: [[Terminal Trust]]."
     },
     {
       "type": "markdown",
@@ -74,7 +79,7 @@
     {
       "type": "markdown",
       "id": "b4625207772c5944",
-      "text": "## See\n\n- [[Terminal Plugin]] · [[TermFlow Plan]] · [[Xterm in Wiki]] · [[About Code Plugin]]"
+      "text": "## See\n\n- [[Terminal Plugin]] · [[TermFlow Plan]] · [[Xterm in Wiki]] · [[Terminal Trust]] · [[About Code Plugin]]"
     }
   ],
   "plugin": "terminal",
@@ -127,17 +132,22 @@
           {
             "type": "code",
             "id": "4cb74f553e835dc2",
-            "text": "COLOR: green\nHEIGHT: 320\nFONT: 14\nSESSION: build\nRUN\necho the script starts here"
+            "text": "COLOR: green\nHEIGHT: 320\nFONT: 14\nSESSION: build\nHOST: pi5.local\nRUN\necho the script starts here"
           },
           {
             "type": "markdown",
             "id": "20bd46f005d420b4",
-            "text": "- **COLOR:** (or **COLOUR:** / **THEME:**) — a named scheme: `dark` (default), `paper` (light), `green` and `amber` (classic phosphor), `solarized`, `solarized-light`, `dracula`, `nord`\n- **HEIGHT:** — terminal area height in px\n- **FONT:** (or **SIZE:**) — font size\n- **SESSION:** — pty session name, overriding the item field\n- **RUN** — show the *run* button (one-shot capture). Off by default: the capture path has no pty, so any script that prompts — `sudo` above all — would hang. Such scripts belong in the live terminal."
+            "text": "- **COLOR:** (or **COLOUR:** / **THEME:**) — a named scheme: `dark` (default), `paper` (light), `green` and `amber` (classic phosphor), `solarized`, `solarized-light`, `dracula`, `nord`\n- **HEIGHT:** — terminal area height in px\n- **FONT:** (or **SIZE:**) — font size\n- **SESSION:** — pty session name, overriding the item field\n- **HOST:** (or **SSH:**) — run the script through ssh on the named host instead of the local shell. The local pty ssh's out with *your own key*, to a server-side allowlisted host only: `HOST pi5.local` or `SSH: user@host`\n- **RUN** — show the *run* button (one-shot capture). Off by default: the capture path has no pty, so any script that prompts — `sudo` above all — would hang. Such scripts belong in the live terminal."
           },
           {
             "type": "markdown",
             "id": "ea7ff55af6d9ab57",
-            "text": "## Workflows\n\nA terminal item can be a **step in a [[TermFlow Plan|TermFlow]] workflow**. The Terminal plugin registers a workflow *runner* and renders the gated state: while a step's guard is unmet the item is **locked** — no toolbar, no amber tint, just an inert code-style block with a `🔒 needs:` hint — and unlocks once the guard passes. When a workflow runs a step, its captured result is stored on the item and recorded in the page history."
+            "text": "## Workflows\n\nA terminal item can be a **step in a [[TermFlow Plan]] workflow**. The Terminal plugin registers a workflow *runner* and renders the gated state: while a step's guard is unmet the item is **locked** — no toolbar, no amber tint, just an inert code-style block with a `🔒 needs:` hint — and unlocks once the guard passes. When a workflow runs a step, its captured result is stored on the item and recorded in the page history."
+          },
+          {
+            "type": "markdown",
+            "id": "a0f17e0c11aa5501",
+            "text": "## Where it runs — origin, trust & consent\n\nThe plugin gates on the **origin site of the page an item lives on**, not the address in your browser. In a federated lineup every page remembers its home site, so three states are possible.\n\n- **local** — your own page (a `localhost` site, or the offline mirror): the full live toolbar\n- **trusted** — a page from a *remote* site you have vouched for (`window.trustedAuthors`): a single **run · from <site>** button, run on *your own* pty, **never automatically**\n- **inert** — any other public or remote page: display-only, like a code item\n\nA `HOST` directive lets an item ssh onward to an allowlisted host with your own key, so a wiki page can drive a command on another machine with no shell exposed there. Vouch for an author with `window.trustAuthor('bot.pi5')`. The pty service refuses cross-origin callers it does not serve, restricts CORS to local origins, and allowlists `HOST` targets. Full model: [[Terminal Trust]]."
           },
           {
             "type": "markdown",
@@ -157,7 +167,7 @@
           {
             "type": "markdown",
             "id": "b4625207772c5944",
-            "text": "## See\n\n- [[Terminal Plugin]] · [[TermFlow Plan]] · [[Xterm in Wiki]] · [[About Code Plugin]]"
+            "text": "## See\n\n- [[Terminal Plugin]] · [[TermFlow Plan]] · [[Xterm in Wiki]] · [[Terminal Trust]] · [[About Code Plugin]]"
           }
         ]
       },

@@ -42,6 +42,34 @@ export const isLocalHost = hostname =>
 export const isLocalContext = (hostname, isMirror) =>
   isLocalHost(hostname) || Boolean(isMirror)
 
+// Is the page's ORIGIN site one the viewer has vouched for? Federated wiki
+// carries each lineup page's home site; a page from a *remote* site the viewer
+// trusts may be OFFERED to run on the viewer's own local pty (never auto-run).
+// trustedAuthors is a plain list (or Set) of origin-site hostnames — e.g.
+// ['bot.pi5'] — set by the security client (window.trustedAuthors). Pure.
+export const isTrustedAuthor = (originSite, trustedAuthors) => {
+  if (!originSite) return false
+  const list = trustedAuthors instanceof Set ? [...trustedAuthors]
+    : Array.isArray(trustedAuthors) ? trustedAuthors : []
+  return list.map(String).includes(String(originSite))
+}
+
+// Classify a terminal item by the ORIGIN of the page it lives on — NOT the
+// browser's address bar. In a federated lineup a bot.pi5 page and a
+// one.localhost page sit side by side; each remembers its own home site (the
+// caller passes it in as originSite: $page data-site, or the view host for a
+// page that belongs to the site being viewed).
+//   'local'   — the viewer's own page (localhost/*.localhost, or the local
+//               mirror): full live toolbar, runs on the local pty, as before.
+//   'trusted' — a remote page whose origin the viewer trusts: may be OFFERED to
+//               run on the viewer's local pty behind one explicit click.
+//   'inert'   — any other remote/public page: display only, like the code plugin.
+export const originTrust = (originSite, isMirror, trustedAuthors) => {
+  if (isLocalContext(originSite, isMirror)) return 'local'
+  if (isTrustedAuthor(originSite, trustedAuthors)) return 'trusted'
+  return 'inert'
+}
+
 // ── Formatting directives ────────────────────────────────────────────────────
 //
 // Ward's ALL-CAPS convention (cf. the frame plugin's HEIGHT, the similarity
@@ -52,13 +80,16 @@ export const isLocalContext = (hostname, isMirror) =>
 //   HEIGHT: 320         terminal area height in px
 //   FONT: 14            font size (SIZE: accepted)
 //   SESSION: build      pty session name (overrides the item's session field)
+//   HOST: pi5.local     run through ssh on this host instead of the local shell
+//                       (SSH: user@host accepted) — the local pty ssh's out with
+//                       the viewer's own key; the service allowlists the host
 //   RUN                 show the one-shot run button (off by default — scripts
 //                       that prompt, e.g. sudo, need the live terminal's pty)
 //
 // A valued directive requires a value, introduced by a colon or whitespace — so
 // shell lines like `SIZE=10` are never mistaken for directives. Keywords are
 // case-sensitive uppercase, per the convention.
-const DIRECTIVE = /^(COLOR|COLOUR|THEME|SCHEME|HEIGHT|FONT|SIZE|SESSION)[:\s]\s*(\S.*)$/
+const DIRECTIVE = /^(COLOR|COLOUR|THEME|SCHEME|HEIGHT|FONT|SIZE|SESSION|HOST|SSH)[:\s]\s*(\S.*)$/
 const FLAG = /^RUN:?\s*$/
 
 export const parseDirectives = text => {
@@ -74,6 +105,7 @@ export const parseDirectives = text => {
     if (key === 'HEIGHT') opts.height = parseInt(value, 10) || undefined
     else if (key === 'FONT' || key === 'SIZE') opts.fontSize = parseInt(value, 10) || undefined
     else if (key === 'SESSION') opts.session = value
+    else if (key === 'HOST' || key === 'SSH') opts.host = value
     else opts.scheme = value.toLowerCase()
   }
   while (i < lines.length && lines[i].trim() === '') i++

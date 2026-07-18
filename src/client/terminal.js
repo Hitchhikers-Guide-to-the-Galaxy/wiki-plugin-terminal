@@ -37,7 +37,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
-import { expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, isLocalContext,
+import { expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, originTrust,
   parseDirectives, schemeFor, attachResult } from './helpers.js'
 
 hljs.registerLanguage('bash', bash)
@@ -170,14 +170,16 @@ const renderReply = ($item, { stdout, stderr, exit }) => {
   `)
 }
 
-const run = async ($item, script, base) => {
+// A HOST directive routes the run through ssh on the named host (the service
+// allowlists it and uses the viewer's own key); without it, the local shell.
+const run = async ($item, script, base, host) => {
   $item.trigger('terminal-run', { script })
   $item.find('.terminal-reply').html('<span class="exit">running…</span>')
   try {
     const res = await fetch(`${base}/terminal/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: script || '' }),
+      body: JSON.stringify({ text: script || '', host: host || null }),
     })
     renderReply($item, await res.json())
   } catch (err) {
@@ -190,13 +192,14 @@ const run = async ($item, script, base) => {
 // captured output inline, returning the outcome to the step-through.
 const runStep = async ({ item, $item, body }) => {
   const base = serviceBase(item, window.location.protocol)
+  const { host } = parseDirectives(item.text)
   $item.trigger('terminal-run', { script: body })
   $item.find('.terminal-reply').html('<span class="exit">running…</span>')
   try {
     const res = await fetch(`${base}/terminal/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: body || '' }),
+      body: JSON.stringify({ text: body || '', host: host || null }),
     })
     const data = await res.json()
     renderReply($item, data)
@@ -235,7 +238,10 @@ const attach = ($item, item, base, opts = {}) => {
   term.loadAddon(fit)
   term.open(host)
 
-  const socket = new WebSocket(wsUrl(base, `/terminal/pty/${sessionName(item, opts.session)}`))
+  // A HOST directive makes the pty an ssh session to that host (viewer's key);
+  // the service allowlists it. Passed as a query param at session-create time.
+  const hostQuery = opts.host ? `?host=${encodeURIComponent(opts.host)}` : ''
+  const socket = new WebSocket(wsUrl(base, `/terminal/pty/${sessionName(item, opts.session)}${hostQuery}`))
   socket.binaryType = 'arraybuffer'
   const decoder = new TextDecoder()
   const scan = makeCaptureScanner(result => $item.trigger('terminal-result', result))
@@ -306,14 +312,18 @@ const pasteScript = (handle, script) =>
 const bind = async ($item, item) => {
   $item.find('.terminal-script').on('dblclick', () => wiki.textEditor($item, item))
 
-  // Local-first only. On a public server the plugin is inert — just the code
-  // display, no toolbar, no network probe — exactly like the code plugin. The
-  // local mirror farm counts as local even though it serves public domain
-  // names (window.isLocalMirror, set by the wiki-security-author client).
-  if (!isLocalContext(window.location.hostname, window.isLocalMirror)) return
+  // Gate on the ORIGIN of the page this item lives on — not the browser's
+  // address bar. Federated wiki carries each lineup page's home site on the
+  // enclosing .page ($page data-site); a page that belongs to the site being
+  // viewed has none, so fall back to the view host. A public page a viewer is
+  // merely browsing stays inert (display only, like the code plugin); the
+  // viewer's own local page runs live; a trusted remote page is *offered*.
+  const originSite = $item.parents('.page').data('site') || window.location.hostname
+  const trust = originTrust(originSite, window.isLocalMirror, window.trustedAuthors)
+  if (trust === 'inert') return
 
   const base = serviceBase(item, window.location.protocol)
-  if (!(await healthy(base))) return // service down on localhost: display only
+  if (!(await healthy(base))) return // no local pty reachable: display only
 
   // Guard against fedwiki binding the *same* rendered item twice (the async
   // health check above can let two binds interleave). Key the flag on the
@@ -329,6 +339,20 @@ const bind = async ($item, item) => {
   const opts = parseDirectives(item.text)
   const { script } = opts
 
+  // A trusted REMOTE page (from a site in window.trustedAuthors) is never
+  // auto-run: one explicit button runs its script on the viewer's OWN local pty
+  // (base is terminal.localhost = the viewer's loopback). A HOST directive can
+  // still ssh onward with the viewer's key. No live terminal, no auto-attach —
+  // deliberate consent is the whole point of instructing a local shell from a
+  // page you did not write.
+  if (trust === 'trusted') {
+    const $tools = $item.find('.terminal-tools')
+    $tools.html(`<button class="t-run-remote" title="run this script from ${expand(originSite)} on your own machine">▶ run · from ${expand(originSite)}</button>`)
+    $tools.find('.t-run-remote').on('click', () => run($item, script, base, opts.host))
+    return
+  }
+
+  // trust === 'local' — the viewer's own page: the full live toolbar, as before.
   // run is opt-in (RUN directive): one-shot capture has no pty, so anything
   // that prompts — sudo above all — would hang. The live terminal always works.
   const $tools = $item.find('.terminal-tools')
@@ -353,8 +377,8 @@ const bind = async ($item, item) => {
   const standing = window.workflow?.getLock?.($item.parents('.page').data('key') || 'page', item.id)
   if (standing) applyLock(standing)
 
-  // run — one-shot capture, no terminal UI
-  $tools.find('.t-run').on('click', () => run($item, script, base))
+  // run — one-shot capture, no terminal UI (HOST directive ssh's out)
+  $tools.find('.t-run').on('click', () => run($item, script, base, opts.host))
 
   // terminal — toggle the live area. Opening attaches (once) and pastes the
   // script ready to run; closing hides the area but keeps the session alive.
@@ -367,7 +391,7 @@ const bind = async ($item, item) => {
     $box.toggleClass('term-open', open)
     if (!open) return $panel.removeClass('zoomed')
     const handle = attach($item, item, base, opts)
-    $item.find('.terminal-name').text(sessionName(item, opts.session))
+    $item.find('.terminal-name').text(sessionName(item, opts.session) + (opts.host ? ` @${opts.host}` : ''))
     if (!$item.data('pasted')) {
       pasteScript(handle, script)
       $item.data('pasted', true)
@@ -396,7 +420,8 @@ const bind = async ($item, item) => {
   })
 
   $tools.find('.t-tab').on('click', () =>
-    window.open(`${base}/terminal/page?session=${sessionName(item, opts.session)}`, '_blank')
+    window.open(`${base}/terminal/page?session=${sessionName(item, opts.session)}` +
+      (opts.host ? `&host=${encodeURIComponent(opts.host)}` : ''), '_blank')
   )
 }
 
