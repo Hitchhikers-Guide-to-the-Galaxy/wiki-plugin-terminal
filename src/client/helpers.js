@@ -85,19 +85,120 @@ export const originTrust = (originSite, isMirror, trustedAuthors) => {
 //                       the viewer's own key; the service allowlists the host
 //   RUN                 show the one-shot run button (off by default — scripts
 //                       that prompt, e.g. sudo, need the live terminal's pty)
+//   BUTTON              render the item as a text button: the script pane is
+//                       hidden and one click pastes the script into the live
+//                       session and presses Return — for driving a long-lived
+//                       REPL (e.g. Claude Code) in a shared SESSION from a page
+//   BUTTON: show        same, but the click opens the terminal panel first so
+//                       the paste and run happen where the reader can see them
+//   LABEL: Do Phase 1   the button's face text (defaults to the script's first
+//                       line, truncated)
+//   BOOT: claude        command a BUTTON click runs first when its click just
+//                       created the session — start the REPL, wait for it to
+//                       draw, then paste. An already-live session skips boot.
+//   GUARD: <command>    readiness test for a BUTTON, run one-shot server-side.
+//                       Exit 0 = ready. Otherwise the button turns into a
+//                       fix-it affordance (see GUARDLABEL): clicking it opens
+//                       the terminal — booting the session if BOOT says so —
+//                       instead of sending the prompt, so the reader settles
+//                       the precondition (e.g. /login) first. Re-checked on
+//                       every click.
+//   GUARDLABEL: Sign in the fix-it face text while the guard fails
 //
 // A valued directive requires a value, introduced by a colon or whitespace — so
 // shell lines like `SIZE=10` are never mistaken for directives. Keywords are
 // case-sensitive uppercase, per the convention.
-const DIRECTIVE = /^(COLOR|COLOUR|THEME|SCHEME|HEIGHT|FONT|SIZE|SESSION|HOST|SSH)[:\s]\s*(\S.*)$/
+const DIRECTIVE = /^(COLOR|COLOUR|THEME|SCHEME|HEIGHT|FONT|SIZE|SESSION|HOST|SSH|LABEL|BOOT|GUARD|GUARDLABEL)[:\s]\s*(\S.*)$/
 const FLAG = /^RUN:?\s*$/
+const BUTTON_FLAG = /^BUTTON(?::\s*(\S+))?\s*$/
+
+// ── NEEDS — declared context variables ───────────────────────────────────────
+//
+// A shell example should read as the command you actually run, not as the
+// plumbing that fetches its secrets. NEEDS declares where a placeholder's value
+// comes from, so the script line stays clean and the placeholder renders as a
+// chip the reader can hover or follow.
+//
+//   NEEDS USER: keychain Nextcloud account — [[Nextcloud App Password]]
+//   NEEDS AUTH: keychain Nextcloud netrc
+//   NEEDS SERVER: ask "Your Nextcloud host" = nextcloud.hitchhikers.earth
+//   NEEDS ROOT: /var/www
+//
+// Three source kinds:
+//   keychain <service> [field]  resolved on the viewer's machine via `security`;
+//                               never typed, never echoed. field 'netrc' asks for
+//                               a temporary credentials file rather than a value.
+//   ask "prompt" [= default]    an inline editable chip — local context the
+//                               reader fills in.
+//   <anything else>             a plain value, substituted and shown as-is.
+//
+// A trailing `[[Page Name]]` (anywhere in the spec) names the page that explains
+// the variable; the chip links to it.
+//
+// Resolution happens on the viewer's machine, never from page text — see the
+// vault map in Phase 2. Parsing here is pure and does no lookups.
+const NEEDS = /^NEEDS\s+([A-Z][A-Z0-9_]*)\s*:?\s+(\S.*)$/
+
+export const parseNeed = (name, spec) => {
+  let rest = String(spec).trim()
+  let link = null
+  const lm = rest.match(/\[\[([^\]]+)\]\]/)
+  if (lm) {
+    link = lm[1].trim()
+    rest = (rest.slice(0, lm.index) + rest.slice(lm.index + lm[0].length))
+      .replace(/[\s—–-]+$/, '').trim()
+  }
+
+  const kc = rest.match(/^keychain\s+(\S+)(?:\s+(\S+))?\s*$/i)
+  if (kc) return { name, kind: 'keychain', service: kc[1], field: kc[2] || 'password', link }
+
+  // Pulldown kinds — options come from the local service, names only:
+  //   NEEDS HOST: sshhost = pi5.local      the pty's ssh allowlist
+  //   NEEDS SECRET: vault = Dynadot API Key  the vault's entry names
+  //   NEEDS SID: claudesession             Claude Code conversations, newest
+  //                                        first — the pick is a session id,
+  //                                        for `claude --resume $SID`
+  const sh = rest.match(/^sshhost\b\s*(?:=\s*(\S.*))?$/i)
+  if (sh) return { name, kind: 'sshhost', value: (sh[1] || '').trim(), link }
+  const vp = rest.match(/^vault\b\s*(?:=\s*(\S.*))?$/i)
+  if (vp) return { name, kind: 'vault', entry: (vp[1] || '').trim(), link }
+  const cs = rest.match(/^claudesession\b\s*(?:=\s*(\S.*))?$/i)
+  if (cs) return { name, kind: 'claudesession', value: (cs[1] || '').trim(), link }
+
+  if (/^ask\b/i.test(rest)) {
+    let tail = rest.replace(/^ask\b\s*/i, '')
+    let prompt = ''
+    // A quoted prompt is consumed first so an `=` inside it is not read as the
+    // default-value separator.
+    const q = tail.match(/^"([^"]*)"|^'([^']*)'/)
+    if (q) { prompt = q[1] ?? q[2]; tail = tail.slice(q[0].length) }
+    let value = ''
+    const eq = tail.indexOf('=')
+    if (eq !== -1) {
+      value = tail.slice(eq + 1).trim()
+      if (!q) prompt = tail.slice(0, eq).trim()
+    } else if (!q) prompt = tail.trim()
+    return { name, kind: 'ask', prompt: prompt || name, value, link }
+  }
+
+  return { name, kind: 'value', value: rest, link }
+}
 
 export const parseDirectives = text => {
   const lines = String(text || '').split('\n')
   const opts = {}
+  const needs = []
   let i = 0
   for (; i < lines.length; i++) {
     if (lines[i].match(FLAG)) { opts.run = true; continue }
+    const b = lines[i].match(BUTTON_FLAG)
+    if (b) {
+      opts.button = true
+      if ((b[1] || '').toLowerCase() === 'show') opts.buttonShow = true
+      continue
+    }
+    const n = lines[i].match(NEEDS)
+    if (n) { needs.push(parseNeed(n[1], n[2])); continue }
     const m = lines[i].match(DIRECTIVE)
     if (!m) break
     const [, key, raw] = m
@@ -106,10 +207,169 @@ export const parseDirectives = text => {
     else if (key === 'FONT' || key === 'SIZE') opts.fontSize = parseInt(value, 10) || undefined
     else if (key === 'SESSION') opts.session = value
     else if (key === 'HOST' || key === 'SSH') opts.host = value
+    else if (key === 'LABEL') opts.label = value
+    else if (key === 'BOOT') opts.boot = value
+    else if (key === 'GUARD') opts.guard = value
+    else if (key === 'GUARDLABEL') opts.guardLabel = value
     else opts.scheme = value.toLowerCase()
   }
   while (i < lines.length && lines[i].trim() === '') i++
-  return { script: lines.slice(i).join('\n'), ...opts }
+  return { script: lines.slice(i).join('\n'), needs, ...opts }
+}
+
+// The face text of a BUTTON-mode item: LABEL wins; otherwise the script's
+// first line stands in, truncated so a verbose prompt still reads as a button.
+export const buttonLabel = (opts = {}) => {
+  if (opts.label) return opts.label
+  const first = String(opts.script || '').split('\n')[0].trim()
+  return first.length > 48 ? first.slice(0, 47) + '…' : first || 'run'
+}
+
+// ── Secret / non-secret ──────────────────────────────────────────────────────
+//
+// The split that makes a pasted command both correct and safe:
+//
+//   non-secret — an ask value, a plain value, or a keychain *account* — is
+//     substituted into the pasted text. The prompt shows the real command, and
+//     the scrollback stays re-runnable.
+//   secret — a keychain password, token or netrc — never appears in the pasted
+//     text. The script keeps `$NAME` and the shell expands it from the session
+//     environment, which the service fills in before the first prompt.
+//
+// A netrc field is the strongest form: the service writes a 0600 file and
+// exports its path, so the secret itself is in no variable, no argv, no
+// scrollback — only a path is.
+const SECRET_FIELDS = new Set(['password', 'passwd', 'pass', 'netrc', 'token',
+  'secret', 'key', 'apikey', 'api-key'])
+
+export const isSecret = need =>
+  need.kind === 'vault' ||
+  (need.kind === 'keychain' && SECRET_FIELDS.has(String(need.field).toLowerCase()))
+
+// Names the shell already owns. Exporting one would clobber it for the session,
+// and — worse — a script writing `$USER` would silently get the login name
+// instead of the declared value, working by accident for whoever wrote the page
+// and failing for everyone else.
+export const RESERVED_NAMES = new Set(['USER', 'HOME', 'PATH', 'SHELL', 'PWD',
+  'OLDPWD', 'LANG', 'LC_ALL', 'TERM', 'IFS', 'PS1', 'ZDOTDIR', 'LOGNAME',
+  'TMPDIR', 'EDITOR', 'HOSTNAME', 'UID', 'SHLVL', 'PPID', 'RANDOM'])
+
+export const needWarnings = (needs = [], script = '') => {
+  const out = []
+  for (const need of needs) {
+    if (RESERVED_NAMES.has(need.name)) {
+      out.push(`${need.name} is already a shell variable — rename it, or the shell's own value wins.`)
+    }
+    if (isSecret(need) && !new RegExp(`\\$${escRe(need.name)}\\b`).test(script)) {
+      out.push(`${need.name} holds a secret, so the script must use $${need.name} — a bare ${need.name} is never substituted.`)
+    }
+  }
+  return out
+}
+
+// Build the text actually pasted at the prompt. Non-secret values (supplied by
+// the reader via ask chips, or resolved from the Keychain by the service and
+// handed back) are substituted; secrets are left as `$NAME` for the shell.
+export const resolveScript = (script, needs = [], values = {}) => {
+  let out = String(script)
+  for (const need of needs) {
+    if (isSecret(need)) continue
+    const value = values[need.name] ?? need.value ?? ''
+    if (!value) continue
+    out = out.replace(new RegExp(`(\\$?)\\b${escRe(need.name)}\\b`, 'g'), value)
+  }
+  return out
+}
+
+// What the service is asked to resolve: names and where to look, never values.
+// picks: the reader's pulldown selections ({name: vault entry}) — a vault chip
+// resolves as a keychain need against the CHOSEN entry name, which the service
+// looks up in vault.json (the allowlist), same as a literal keychain chip.
+export const needsPayload = (needs = [], picks = {}) => needs
+  .filter(n => n.kind === 'keychain' || n.kind === 'vault')
+  .map(n => n.kind === 'vault'
+    ? { name: n.name, kind: 'keychain', service: picks[n.name] || n.entry || '', field: 'password' }
+    : { name: n.name, kind: n.kind, service: n.service, field: n.field })
+  .filter(n => n.service)
+
+// ── Chips ────────────────────────────────────────────────────────────────────
+//
+// Rendering carries the convention "you do not type this": a declared variable
+// appears as a coloured chip, not as bare text a newcomer would copy literally.
+
+const attr = s => expand(s).replace(/"/g, '&quot;')
+const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+export const needTitle = need => {
+  const explains = need.link ? ` Click to read ${need.link}.` : ''
+  if (need.kind === 'keychain') {
+    // The second word may name a field (account, password) or an account value
+    // (hitchhiker); quoting the entry keeps the sentence true either way.
+    const what = need.field === 'netrc'
+      ? `a temporary credentials file built from your Keychain entry “${need.service}”`
+      : `read from your Keychain entry “${need.service}” (${need.field})`
+    return `${need.name} — ${what}, when the script runs. `
+      + `You never type it and it never appears on screen.${explains}`
+  }
+  if (need.kind === 'ask') {
+    return `${need.name} — ${need.prompt}. Click to edit`
+      + `${need.value ? `; default ${need.value}` : ''}. Filled in on your machine.${explains}`
+  }
+  if (need.kind === 'sshhost') {
+    return `${need.name} — pick a host from the terminal service's ssh allowlist. `
+      + `The pty ssh's out with this machine's own key.${explains}`
+  }
+  if (need.kind === 'vault') {
+    return `${need.name} — pick a secret by name from your vault `
+      + `(~/.config/wiki-plugin-terminal/vault.json). Resolved from the Keychain when `
+      + `the terminal attaches; you never type it and it never appears on screen.${explains}`
+  }
+  if (need.kind === 'claudesession') {
+    return `${need.name} — pick a Claude Code conversation (newest first, from `
+      + `~/.claude/projects). The pick is its session id, for claude --resume.${explains}`
+  }
+  return `${need.name} — filled in as ${need.value}. You do not type it.${explains}`
+}
+
+export const chipHtml = (need, label = need.name) => {
+  const link = need.link ? ` data-link="${attr(need.link)}"` : ''
+  const cls = `term-need term-need-${need.kind}${need.link ? ' term-need-linked' : ''}`
+  const common = `class="${cls}" data-need="${attr(need.name)}" title="${attr(needTitle(need))}"${link}`
+  if (need.kind === 'ask') {
+    return `<span ${common} contenteditable="true" spellcheck="false"`
+      + ` data-default="${attr(need.value)}">${attr(need.value || need.prompt)}</span>`
+  }
+  // Pulldown chips: rendered with just their default; bind fills the options
+  // from the service's /terminal/options (names only) once a pty is reachable.
+  if (need.kind === 'sshhost' || need.kind === 'vault' || need.kind === 'claudesession') {
+    const def = need.kind === 'vault' ? need.entry : need.value
+    const opt = def ? `<option value="${attr(def)}" selected>${attr(def)}</option>`
+                    : `<option value="">choose…</option>`
+    return `<select ${common} data-kind="${need.kind}">${opt}</select>`
+  }
+  return `<span ${common} tabindex="0">${attr(label)}</span>`
+}
+
+// Rewrite declared names in already-highlighted script HTML as chips. Splitting
+// on tags keeps the substitution inside text nodes, so a name can never land in
+// an attribute of highlight.js's own markup. A leading `$` is folded into the
+// chip so `$AUTH` reads as one thing.
+//
+// On an 'inert' page (public, not the viewer's own) chips are not rendered at
+// all: the script degrades to plain uppercase placeholders, which is exactly
+// what a reader on someone else's site should see and copy.
+export const applyNeeds = (html, needs = [], trust = 'local') => {
+  if (!needs.length || trust === 'inert') return html
+  const byName = new Map(needs.map(n => [n.name, n]))
+  const alt = [...byName.keys()].sort((a, b) => b.length - a.length).map(escRe).join('|')
+  if (!alt) return html
+  const re = new RegExp(`(\\$?)\\b(${alt})\\b`, 'g')
+  return String(html).split(/(<[^>]*>)/).map((seg, i) =>
+    i % 2 ? seg : seg.replace(re, (m, sigil, name) => {
+      const need = byName.get(name)
+      return need ? chipHtml(need, `${sigil}${name}`) : m
+    })
+  ).join('')
 }
 
 // Named colour schemes — well-known, eye-tested text/background combinations.

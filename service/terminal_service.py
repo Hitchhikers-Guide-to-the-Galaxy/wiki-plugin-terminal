@@ -25,10 +25,13 @@ import fcntl
 import json
 import os
 import re
+import shlex
+import shutil
 import signal
 import struct
 import subprocess
 import termios
+from datetime import datetime
 
 import pty as pty_module
 
@@ -75,26 +78,197 @@ def resolve_ssh_target(host: str | None) -> str | None:
 
 # OSC 133 shell-integration hooks so clients can capture per-command output.
 # Written to ZDOTDIR so the spawned zsh picks them up without touching ~/.zshrc.
+# The trailing source line applies any resolved NEEDS for this session: it runs
+# before the first prompt, so nothing is ever echoed into the scrollback.
 ZSHRC_HOOKS = r"""
 [ -f ~/.zshrc ] && source ~/.zshrc
 precmd()  { print -n "\e]133;D;$?\a\e]133;A\a" }
 preexec() { print -n "\e]133;C\a" }
+[ -f "$ZDOTDIR/.needs" ] && source "$ZDOTDIR/.needs"
 """
 
+# ── NEEDS resolution ──────────────────────────────────────────────────────────
+#
+# A wiki page may NAME a credential; it may never describe how to fetch one.
+# The mapping from an abstract name to an actual Keychain query lives here, on
+# the viewer's own machine, in a file the service owns:
+#
+#   ~/.config/wiki-plugin-terminal/vault.json
+#   {
+#     "Nextcloud": {
+#       "service": "Nextcloud",
+#       "account": "david_app-password:https://nextcloud.example/:0",
+#       "login":   "david",
+#       "machine": "nextcloud.example"
+#     }
+#   }
+#
+# A page naming an entry that is not in this file resolves to nothing — it is
+# reported back as unknown so the reader can fill the value in by hand. That is
+# what keeps a forked page from minting arbitrary `security` reads.
+VAULT_PATH = os.path.expanduser(
+    os.environ.get("WIKI_TERMINAL_VAULT", "~/.config/wiki-plugin-terminal/vault.json")
+)
+
+SESSION_HOME = os.path.expanduser("~/.cache/wiki-plugin-terminal/sessions")
+
+# Fields whose value must never travel back to the browser.
+SECRET_FIELDS = {"password", "passwd", "pass", "netrc", "token", "secret",
+                 "key", "apikey", "api-key"}
+# Fields that name a person rather than a secret: safe to return for display.
+LOGIN_FIELDS = {"account", "user", "login", "username"}
+
+
+def load_vault() -> dict:
+    try:
+        with open(VAULT_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+KEYCHAIN_TIMEOUT = int(os.environ.get("WIKI_TERMINAL_KEYCHAIN_TIMEOUT", "20"))
+
+
+class Blocked(Exception):
+    """The Keychain did not answer — locked, or waiting on an approval dialog."""
+
+
+def keychain_password(service: str, account: str | None) -> str | None:
+    """Read one secret. Raises Blocked when macOS is waiting on the human.
+
+    `security` blocks indefinitely when the login keychain is locked or when the
+    item's ACL has not yet been granted to it — macOS puts up a dialog and waits.
+    That is a different failure from "no such entry", and the reader needs to be
+    told which one it is, so it surfaces as Blocked rather than as a missing key.
+    """
+    cmd = ["security", "find-generic-password", "-s", service]
+    if account:
+        cmd += ["-a", account]
+    cmd += ["-w"]
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=KEYCHAIN_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise Blocked(service)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.rstrip("\n") if done.returncode == 0 else None
+
+
+def session_dir(session: str) -> str:
+    path = os.path.join(SESSION_HOME, session)
+    os.makedirs(path, mode=0o700, exist_ok=True)
+    with open(os.path.join(path, ".zshrc"), "w") as f:
+        f.write(ZSHRC_HOOKS)
+    return path
+
+
+def _write_private(path: str, text: str) -> str:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    return path
+
+
+def resolve_needs(session: str, needs: list) -> dict:
+    """Resolve declared needs for one session.
+
+    Secrets are written into the session's private `.needs` file as exports —
+    for a netrc field, only the *path* of a 0600 credentials file is exported,
+    so the secret itself never lands in a variable. Non-secret values (a login
+    name) are returned for the client to substitute into the displayed command.
+    """
+    vault = load_vault()
+    values: dict[str, str] = {}
+    unknown: list[str] = []
+    blocked: list[str] = []
+    exports: list[str] = []
+    path = session_dir(session)
+
+    for need in needs:
+        name = need.get("name") or ""
+        if not re.match(r"^[A-Z][A-Z0-9_]*$", name):
+            continue
+        entry = vault.get(need.get("service") or "")
+        if not entry:
+            unknown.append(name)
+            continue
+        field = str(need.get("field") or "password").lower()
+
+        if field in LOGIN_FIELDS:
+            login = entry.get("login") or entry.get("account")
+            if login:
+                values[name] = login
+            else:
+                unknown.append(name)
+            continue
+
+        try:
+            secret = keychain_password(entry.get("service", ""), entry.get("account"))
+        except Blocked:
+            blocked.append(name)
+            continue
+        if secret is None:
+            unknown.append(name)
+            continue
+
+        if field == "netrc":
+            machine = entry.get("machine")
+            login = entry.get("login") or entry.get("account")
+            if not machine or not login:
+                # Without an explicit machine a netrc would have to say
+                # `default`, handing the credential to every host the script
+                # touches. Refuse rather than leak.
+                unknown.append(name)
+                continue
+            netrc = _write_private(
+                os.path.join(path, f"netrc-{name}"),
+                f"machine {machine} login {login} password {secret}\n",
+            )
+            exports.append(f"export {name}={shlex.quote(netrc)}")
+        elif field in SECRET_FIELDS:
+            exports.append(f"export {name}={shlex.quote(secret)}")
+        else:
+            unknown.append(name)
+
+    _write_private(os.path.join(path, ".needs"), "\n".join(exports) + "\n")
+    return {
+        "values": values,
+        "unknown": unknown,
+        "blocked": blocked,
+        "secrets": [e.split("=", 1)[0].removeprefix("export ") for e in exports],
+        "live": session in sessions,
+    }
+
 sessions: dict[str, "Session"] = {}
+
+# The service may itself have been launched from an agent session or an IDE,
+# whose ANTHROPIC_* / CLAUDE* variables (base-URL auth proxies, API keys,
+# session markers) would otherwise leak into every shell it hosts — a nested
+# `claude` would then authenticate as the launcher instead of the user's own
+# login. Spawned shells get a clean slate so they behave exactly like a fresh
+# Terminal window.
+_LAUNCHER_ENV = ("ANTHROPIC", "CLAUDE")
+
+
+def scrub_launcher_env() -> dict:
+    return {k: v for k, v in os.environ.items() if not k.startswith(_LAUNCHER_ENV)}
 
 
 class Session:
     """One forked zsh on a pty; many websocket clients may attach."""
 
     def __init__(self, name: str, ssh_target: str | None = None):
-        zdotdir = os.path.expanduser("~/.cache/wiki-plugin-terminal")
-        os.makedirs(zdotdir, exist_ok=True)
-        with open(os.path.join(zdotdir, ".zshrc"), "w") as f:
-            f.write(ZSHRC_HOOKS)
+        # Per-session ZDOTDIR: resolved secrets belong to one session and must
+        # not be readable by the next one. session_dir writes the hooks, and any
+        # .needs already resolved for this session is picked up at shell start.
+        zdotdir = session_dir(name)
 
         pid, fd = pty_module.fork()
         if pid == 0:  # child
+            for key in [k for k in os.environ if k.startswith(_LAUNCHER_ENV)]:
+                del os.environ[key]
             os.environ["TERM"] = "xterm-256color"
             os.environ["ZDOTDIR"] = zdotdir
             if ssh_target:
@@ -137,10 +311,31 @@ class Session:
         except OSError:
             pass
         try:
-            os.kill(self.pid, signal.SIGHUP)
-        except ProcessLookupError:
-            pass
+            # The pty fork made the shell a session leader, so its pgid is its
+            # pid — HUP the whole group so a foreground REPL (claude, python)
+            # dies with its shell instead of lingering orphaned.
+            os.killpg(self.pid, signal.SIGHUP)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                os.kill(self.pid, signal.SIGHUP)
+            except ProcessLookupError:
+                pass
+        # Tell every window the session is gone — otherwise their websockets
+        # dangle open against a dead pty and the client shows a frozen frame
+        # that still looks live (the original "jammed terminal").
+        for ws in list(self.clients):
+            asyncio.ensure_future(self._close_ws(ws))
+        self.clients.clear()
+        # Resolved secrets die with the session they were minted for.
+        shutil.rmtree(os.path.join(SESSION_HOME, self.name), ignore_errors=True)
         sessions.pop(self.name, None)
+
+    @staticmethod
+    async def _close_ws(ws: WebSocket):
+        try:
+            await ws.close()
+        except Exception:
+            pass
 
 
 def _origin_host(origin: str) -> str:
@@ -172,11 +367,86 @@ def health():
     return {"status": "ok", "sessions": sorted(sessions)}
 
 
+# ── Claude Code conversations ────────────────────────────────────────────────
+#
+# Claude Code (CLI and app alike) keeps every conversation as a .jsonl
+# transcript under ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl. Listing
+# them read-only lets a wiki page offer a `claudesession` picker whose pick is
+# a session id for `claude --resume`. Nothing here ever writes or deletes a
+# transcript — ending a wiki pty never touches this folder.
+CLAUDE_PROJECTS = os.path.expanduser("~/.claude/projects")
+
+
+def _first_prompt(path: str) -> str | None:
+    """The first user message's opening words — the human name of a session."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            for _ in range(40):
+                line = fh.readline(200_000)
+                if not line:
+                    break
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("type") != "user":
+                    continue
+                content = (rec.get("message") or {}).get("content")
+                if isinstance(content, str):
+                    text = content
+                elif isinstance(content, list):
+                    text = next((c.get("text", "") for c in content
+                                 if isinstance(c, dict) and c.get("type") == "text"), "")
+                else:
+                    text = ""
+                text = " ".join(text.split())
+                # Skip machine-generated records (<local-command-caveat> and
+                # kin) — keep reading for the first human words.
+                if text and not text.startswith("<"):
+                    return text[:57] + "…" if len(text) > 58 else text
+    except OSError:
+        pass
+    return None
+
+
+def list_claude_sessions(limit: int = 25) -> list[dict]:
+    found = []
+    try:
+        for proj in os.scandir(CLAUDE_PROJECTS):
+            if not proj.is_dir():
+                continue
+            for f in os.scandir(proj.path):
+                if f.name.endswith(".jsonl") and f.is_file():
+                    found.append((f.stat().st_mtime, f.path, f.name[:-6]))
+    except OSError:
+        return []
+    found.sort(reverse=True)
+    sessions = []
+    for mtime, path, sid in found[:limit]:
+        label = _first_prompt(path) or sid[:8]
+        when = datetime.fromtimestamp(mtime).strftime("%b %d %H:%M")
+        sessions.append({"id": sid, "label": f"{label} · {when}"})
+    return sessions
+
+
+@router.get("/options")
+def options(request: Request):
+    """Names only, never values: the ssh-host allowlist and the vault's entry
+    names, feeding the client's `sshhost` / `vault` pulldown chips. Listing a
+    vault name reveals nothing the vault file's purpose doesn't imply — the
+    secret itself only ever moves into a session's private .needs file."""
+    if not http_origin_allowed(request):
+        return JSONResponse({"error": "forbidden origin"}, status_code=403)
+    return {"hosts": sorted(SSH_HOSTS), "vault": sorted(load_vault().keys()),
+            "claude_sessions": list_claude_sessions()}
+
+
 class RunRequest(BaseModel):
     text: str
     cwd: str | None = None
     host: str | None = None
     timeout: int = 30
+    session: str | None = None
 
 
 @router.post("/run")
@@ -197,14 +467,45 @@ def run(req: RunRequest, request: Request):
         # user's own login shell (the Pi runs bash, not zsh — don't assume zsh).
         cmd = ["ssh", "-o", "BatchMode=yes", target, req.text]
     else:
-        cmd = ["zsh", "-c", req.text]
+        # A one-shot run has no login shell, so it never reads ZDOTDIR. Source
+        # the session's resolved needs explicitly so `$AUTH` means the same
+        # here as it does in the live terminal. Secrets stay in the file.
+        text = req.text
+        if req.session and SESSION_NAME.match(req.session):
+            needs_file = os.path.join(SESSION_HOME, req.session, ".needs")
+            if os.path.exists(needs_file):
+                text = f"source {shlex.quote(needs_file)}\n{text}"
+        cmd = ["zsh", "-c", text]
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=req.timeout, cwd=cwd,
+            env=scrub_launcher_env(),
         )
         return {"stdout": proc.stdout, "stderr": proc.stderr, "exit": proc.returncode}
     except subprocess.TimeoutExpired:
         return {"stdout": "", "stderr": f"timed out after {req.timeout}s", "exit": -1}
+
+
+class KillRequest(BaseModel):
+    session: str
+
+
+@router.post("/kill")
+async def kill(req: KillRequest, request: Request):
+    """End a named session outright — the reset gesture for a wedged or
+    stale shell (and whatever REPL it runs). Idempotent: killing a session
+    that is not there is already the desired state. Async on purpose:
+    close() touches the event loop (remove_reader), which must happen on
+    the loop thread, not a threadpool worker."""
+    if not http_origin_allowed(request):
+        return JSONResponse({"ok": False, "error": "forbidden origin"}, status_code=403)
+    if not SESSION_NAME.match(req.session or ""):
+        return {"ok": False, "error": "bad session name"}
+    live = sessions.get(req.session)
+    if live is None:
+        return {"ok": True, "gone": True}
+    live.close()
+    return {"ok": True, "killed": req.session}
 
 
 class Guard(BaseModel):
@@ -237,6 +538,35 @@ def check(req: CheckRequest, request: Request):
         except subprocess.TimeoutExpired:
             results[g.id] = False
     return {"results": results}
+
+
+class NeedSpec(BaseModel):
+    name: str
+    kind: str = "keychain"
+    service: str | None = None
+    field: str | None = None
+
+
+class NeedsRequest(BaseModel):
+    session: str
+    needs: list[NeedSpec] = []
+
+
+@router.post("/needs")
+def needs(req: NeedsRequest, request: Request):
+    """Resolve a session's declared NEEDS against the local vault map.
+
+    Returns non-secret values (a login name) for the client to substitute into
+    the command it displays and pastes. Secret values are never in the response:
+    they are written to the session's private .needs file, which its shell
+    sources before the first prompt. Names the vault does not know come back as
+    `unknown` so the reader can supply them by hand.
+    """
+    if not http_origin_allowed(request):
+        return JSONResponse({"values": {}, "unknown": [], "secrets": []}, status_code=403)
+    if not SESSION_NAME.match(req.session):
+        return JSONResponse({"values": {}, "unknown": [], "secrets": []}, status_code=400)
+    return resolve_needs(req.session, [n.model_dump() for n in req.needs])
 
 
 @router.websocket("/pty/{session}")

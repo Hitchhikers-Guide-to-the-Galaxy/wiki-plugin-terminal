@@ -38,7 +38,8 @@ import '@xterm/xterm/css/xterm.css'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
 import { expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, originTrust,
-  parseDirectives, schemeFor, attachResult } from './helpers.js'
+  parseDirectives, schemeFor, attachResult, applyNeeds, resolveScript, needsPayload,
+  needWarnings, buttonLabel } from './helpers.js'
 
 hljs.registerLanguage('bash', bash)
 
@@ -54,6 +55,21 @@ const STYLE = `
   .terminal-item .terminal-script { background:#fff8e6; border-left:3px solid #ffb000 }
   .terminal-item .terminal-script code.hljs { background:transparent;
     white-space:pre-wrap; padding:6px }
+  .terminal-item .term-need { border-radius:3px; padding:0 3px; cursor:pointer;
+    border-bottom:1px dotted currentColor; font-weight:600 }
+  .terminal-item .term-need-keychain { color:#6f42c1; background:#f3eeff }
+  .terminal-item .term-need-value { color:#0a7d5a; background:#e7f6f0 }
+  .terminal-item .term-need-ask { color:#1c5fa8; background:#e8f1fc;
+    border-bottom:1px dashed currentColor; cursor:text; outline:none }
+  .terminal-item .term-need-ask:focus { background:#d7e8fb }
+  .terminal-item select.term-need { appearance:auto; font:inherit; font-weight:600;
+    border:1px solid currentColor; border-radius:3px; padding:0 2px; max-width:16em }
+  .terminal-item select.term-need-sshhost { color:#0a7d5a; background:#e7f6f0 }
+  .terminal-item select.term-need-vault { color:#6f42c1; background:#f3eeff }
+  .terminal-item select.term-need-claudesession { color:#1c5fa8; background:#e8f1fc;
+    max-width:24em }
+  .terminal-item .terminal-needs-hint:not(:empty) { font-size:11px; color:#8a6d00;
+    background:#fff8e6; border-left:3px solid #ffb000; padding:2px 6px; margin-top:4px }
   .terminal-item .terminal-tools { margin-top:4px }
   .terminal-item .terminal-tools button { margin-right:4px; font-size:11px }
   .terminal-item.term-open .terminal-tools .t-term { background:#333; color:#fff }
@@ -77,6 +93,30 @@ const STYLE = `
   .terminal-item .terminal-panel.zoomed { position:fixed; inset:0; z-index:9999;
     margin:0; border-radius:0; display:flex; flex-direction:column }
   .terminal-item .terminal-panel.zoomed .terminal-host { flex:1; height:auto }
+
+  /* BUTTON mode: the script pane gives way to one text button. Amber matches
+     the runnable script accent; the transient sent state borrows the green of
+     a resolved need. The expand affordance stays the usual t-term toggle. */
+  .terminal-item .terminal-go { display:none }
+  .terminal-item.term-button-mode .terminal-script { display:none }
+  .terminal-item.term-button-mode .terminal-go { display:block; margin:2px 0;
+    text-align:right }
+  .terminal-item.term-button-mode .terminal-tools { text-align:right }
+  .terminal-item .t-go { font:600 13px/1.4 sans-serif; padding:6px 16px;
+    border-radius:6px; border:1px solid #ffb000; background:#fff8e6;
+    color:#7a5800; cursor:pointer }
+  .terminal-item .t-go:hover:not(:disabled) { background:#ffefc2 }
+  .terminal-item .t-go:disabled { opacity:.45; cursor:default }
+  .terminal-item .t-go.t-go-sent { background:#e7f6f0; border-color:#0a7d5a;
+    color:#0a7d5a }
+  .terminal-item .t-go.t-go-guard { background:#e8f1fc; border-color:#1c5fa8;
+    color:#1c5fa8 }
+  .terminal-item .t-go.t-go-watch { animation: t-go-pulse 2s ease-in-out infinite }
+  @keyframes t-go-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255,176,0,0) }
+    50% { box-shadow: 0 0 0 4px rgba(255,176,0,.35) }
+  }
+  .terminal-item.term-button-mode.wf-locked .terminal-go { display:none }
 
   /* workflow-gated step (wiki-plugin-termflow locked this item via a
      'workflow-lock' event): no toolbar. A red left bar and faint red tint
@@ -136,11 +176,23 @@ const healthy = async base => {
 
 const emit = ($item, item) => {
   ensureAssets()
-  const { script } = parseDirectives(item.text)
+  const opts = parseDirectives(item.text)
+  const { script, needs } = opts
+  // Chips are gated on the same origin trust the toolbar uses: on a page the
+  // viewer is merely browsing, declared names stay plain text. Computed here
+  // (not in bind) because emit renders the script pane.
+  const originSite = $item.parents('.page').data('site') || window.location.hostname
+  const trust = originTrust(originSite, window.isLocalMirror, window.trustedAuthors)
+  // BUTTON mode only ever activates on the viewer's own page — anywhere else
+  // the item degrades to the plain script block, display-only like any other.
+  const buttonMode = opts.button && trust === 'local'
   $item.append(`
-    <div class="terminal-item">
-      <pre class="terminal-script hljs"><code class="hljs language-bash">${highlightScript(script)}</code></pre>
+    <div class="terminal-item${buttonMode ? ' term-button-mode' : ''}">
+      <pre class="terminal-script hljs"><code class="hljs language-bash">${applyNeeds(highlightScript(script), needs, trust)}</code></pre>
+      ${buttonMode ? `<div class="terminal-go"><button class="t-go" disabled
+        title="terminal service unreachable — display only">${expand(buttonLabel(opts))}</button></div>` : ''}
       <div class="terminal-tools"></div>
+      <div class="terminal-needs-hint"></div>
       <div class="wf-lock-hint"></div>
       <div class="terminal-reply"></div>
       <div class="terminal-panel">
@@ -157,9 +209,84 @@ const emit = ($item, item) => {
       </div>
     </div>
   `)
+  bindNeeds($item, item)
   // A workflow may have stored this step's last result on the item; render it so
   // a reload or a history rewind shows what the step produced (lab notebook).
   if (item.result) renderReply($item, item.result)
+}
+
+// Chip interactions. Bound in emit (not bind) so they work even where no local
+// pty answers — explaining a command is useful with or without a shell.
+//
+// Values the reader types into an `ask` chip are held on the .terminal-item
+// wrapper, which emit recreates per render; substitution into paste/run is
+// Phase 2's job, this only records intent.
+const bindNeeds = ($item, item) => {
+  const $box = $item.find('.terminal-item')
+  const follow = (e, name) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (window.wiki && window.wiki.doInternalLink) {
+      window.wiki.doInternalLink(name, e.shiftKey ? null : $item.parents('.page'))
+    }
+  }
+  // Pulldown chips: fill options from the local service (names only) and record
+  // selections — sshhost picks substitute into the pasted text like ask values;
+  // vault picks steer which Keychain entry resolves at attach time.
+  const $picks = $box.find('select.term-need')
+  if ($picks.length && item) {
+    const base = serviceBase(item, window.location.protocol)
+    fetch(`${base}/terminal/options`, { signal: AbortSignal.timeout(2500) })
+      .then(r => (r.ok ? r.json() : null))
+      .then(opts => {
+        if (!opts) return
+        $picks.each(function () {
+          const kind = $(this).data('kind')
+          const names = (kind === 'vault' ? opts.vault
+            : kind === 'claudesession' ? opts.claude_sessions
+            : opts.hosts) || []
+          const current = $(this).val()
+          for (const n of names) {
+            // claude_sessions entries are {id, label}; the others plain names
+            const value = typeof n === 'object' ? n.id : n
+            const text = typeof n === 'object' ? n.label : n
+            if (value !== current)
+              $(this).append($('<option>').attr('value', value).text(text))
+          }
+        })
+      })
+      .catch(() => {})
+    $picks.on('click', e => e.stopPropagation()).on('change', function () {
+      const name = $(this).data('need')
+      const value = $(this).val()
+      if ($(this).data('kind') === 'vault') {
+        const picks = $box.data('needPicks') || {}
+        picks[name] = value
+        $box.data('needPicks', picks)
+      } else {
+        const values = $box.data('needValues') || {}
+        values[name] = value
+        $box.data('needValues', values)
+      }
+    })
+  }
+  // A keychain or plain-value chip is not editable, so a click follows its page.
+  $box.find('.term-need-linked:not(.term-need-ask)').on('click', function (e) {
+    follow(e, $(this).data('link'))
+  })
+  // An `ask` chip belongs to the reader: a plain click edits it, so following
+  // its explainer needs a modifier (the title says so).
+  $box.find('.term-need-ask').on('click', function (e) {
+    const link = $(this).data('link')
+    if (link && (e.metaKey || e.ctrlKey)) follow(e, link)
+  }).on('input', function () {
+    const values = $box.data('needValues') || {}
+    values[$(this).data('need')] = $(this).text().trim()
+    $box.data('needValues', values)
+  }).on('keydown', function (e) {
+    // Newlines would break the one-line shape of the command.
+    if (e.key === 'Enter') { e.preventDefault(); $(this).blur() }
+  })
 }
 
 const renderReply = ($item, { stdout, stderr, exit }) => {
@@ -172,14 +299,15 @@ const renderReply = ($item, { stdout, stderr, exit }) => {
 
 // A HOST directive routes the run through ssh on the named host (the service
 // allowlists it and uses the viewer's own key); without it, the local shell.
-const run = async ($item, script, base, host) => {
+const run = async ($item, script, base, host, session) => {
   $item.trigger('terminal-run', { script })
   $item.find('.terminal-reply').html('<span class="exit">running…</span>')
   try {
     const res = await fetch(`${base}/terminal/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: script || '', host: host || null }),
+      body: JSON.stringify({ text: script || '', host: host || null,
+        session: session || null }),
     })
     renderReply($item, await res.json())
   } catch (err) {
@@ -219,12 +347,14 @@ const attach = ($item, item, base, opts = {}) => {
   const host = $item.find('.terminal-host').get(0)
 
   // Reuse the live terminal — but only while its host is still in the
-  // document. An edit re-emits a fresh wrapper, orphaning the old xterm; in
-  // that case dispose it and attach anew (the pty session itself persists
-  // server-side, so the shell survives — only local scrollback is lost).
+  // document AND its socket still breathes. An edit re-emits a fresh wrapper,
+  // orphaning the old xterm; a session that ended (exit, a kill, a service
+  // restart) leaves a dead socket behind — a frozen window wearing the old
+  // REPL's last frame, eating keystrokes. Either way: dispose and attach
+  // anew, which also recreates the session server-side on first input.
   const cached = $item.data('terminal')
   if (cached) {
-    if (cached.host === host) return cached
+    if (cached.host === host && cached.socket.readyState <= WebSocket.OPEN) return cached
     cached.socket.close()
     cached.term.dispose()
     $item.removeData('terminal')
@@ -274,8 +404,10 @@ const attach = ($item, item, base, opts = {}) => {
   const ready = new Promise(resolve => { markReady = resolve })
   setTimeout(markReady, 8000)
   let probe = ''
+  let lastData = Date.now()
 
   socket.onmessage = event => {
+    lastData = Date.now()
     const bytes = new Uint8Array(event.data)
     term.write(bytes)
     const text = decoder.decode(bytes, { stream: true })
@@ -289,7 +421,8 @@ const attach = ($item, item, base, opts = {}) => {
     scan(text)
   }
   socket.onopen = () => refit()
-  socket.onclose = () => term.write('\r\n\x1b[2m[disconnected]\x1b[0m\r\n')
+  socket.onclose = () => term.write(
+    '\r\n\x1b[2m[session ended — close and reopen the terminal for a fresh shell]\x1b[0m\r\n')
 
   term.onData(data => socket.send(JSON.stringify({ type: 'input', data })))
   term.onResize(({ cols, rows }) => {
@@ -298,16 +431,69 @@ const attach = ($item, item, base, opts = {}) => {
   })
   new ResizeObserver(() => fit.fit()).observe(host)
 
-  const handle = { term, fit, socket, refit, send, ready, host, theme }
+  const handle = { term, fit, socket, refit, send, ready, host, theme,
+    lastOutput: () => lastData }
   $item.data('terminal', handle)
   return handle
 }
+
+// Wait until the pty has been silent for quietMs — a REPL that was just booted
+// has finished drawing its first screen. Hard-capped, since some TUIs animate
+// even at rest; on cap we proceed rather than strand the click.
+const awaitQuiet = (handle, quietMs = 900, maxMs = 15000) => new Promise(resolve => {
+  const started = Date.now()
+  const tick = () => {
+    if (Date.now() - handle.lastOutput() >= quietMs ||
+        Date.now() - started >= maxMs) return resolve()
+    setTimeout(tick, 150)
+  }
+  setTimeout(tick, quietMs)
+})
 
 // Bracketed paste: zsh inserts the text as one editable block at the prompt
 // (multi-line scripts land intact, cursor ready) without executing it. Gated on
 // `ready` so the markers are never sent before the shell enables paste mode.
 const pasteScript = (handle, script) =>
   handle.ready.then(() => handle.send(`\x1b[200~${script || ''}\x1b[201~`))
+
+// Ask the service to resolve this session's declared needs. Secrets go into the
+// session's private .needs file (sourced by its shell); only non-secret values —
+// a login name — come back here, for substitution into what we display and
+// paste. Failure is not fatal: the script simply pastes with its placeholders.
+const resolveNeeds = async (base, session, needs, $box) => {
+  const payload = needsPayload(needs, $box.data('needPicks') || {})
+  if (!payload.length) return {}
+  try {
+    const res = await fetch(`${base}/terminal/needs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session, needs: payload }),
+    })
+    if (!res.ok) return {}
+    const out = await res.json()
+    $box.data('needsResolved', out)
+    const notes = []
+    if (out.blocked && out.blocked.length) {
+      notes.push(`your Keychain is waiting on you for ${out.blocked.join(', ')} `
+        + '— approve the access prompt (or unlock the login keychain), then click again')
+    }
+    if (out.unknown && out.unknown.length) {
+      notes.push(`not in your vault: ${out.unknown.join(', ')} `
+        + '— fill it in by hand, or add the entry to vault.json')
+    }
+    if (notes.length) $box.find('.terminal-needs-hint').text(notes.join('. '))
+    return out
+  } catch {
+    return {}
+  }
+}
+
+// The text actually pasted: ask-chip edits and service-resolved logins folded
+// in, secrets left as $NAME for the shell to expand.
+const scriptFor = ($box, script, needs) => resolveScript(script, needs, {
+  ...(($box.data('needsResolved') || {}).values || {}),
+  ...($box.data('needValues') || {}),
+})
 
 const bind = async ($item, item) => {
   $item.find('.terminal-script').on('dblclick', () => wiki.textEditor($item, item))
@@ -365,6 +551,27 @@ const bind = async ($item, item) => {
   const $panel = $item.find('.terminal-panel')
   $panel.css('background', schemeFor(opts.scheme).background)
 
+  // Authoring mistakes worth saying out loud rather than debugging at a prompt:
+  // a name the shell already owns, or a secret the script forgot to write as
+  // $NAME (which would paste as a bare word and never be substituted).
+  const warnings = needWarnings(opts.needs, script)
+  if (warnings.length) $item.find('.terminal-needs-hint').text(warnings.join(' '))
+
+  // Arm the session before anything attaches: the service must write the
+  // resolved .needs file *before* the shell starts, because that shell sources
+  // it at login. If the shell is already running, source it now — the line
+  // names a path, never a secret.
+  const armed = async () => {
+    const session = sessionName(item, opts.session)
+    const out = await resolveNeeds(base, session, opts.needs, $box)
+    const handle = attach($item, item, base, opts)
+    if (out.live && out.secrets && out.secrets.length) {
+      await handle.ready
+      handle.send('source "$ZDOTDIR/.needs"\r')
+    }
+    return handle
+  }
+
   // Workflow gating (wiki-plugin-termflow). A workflow item on the page may lock
   // this step until its guard passes; we render the lock and otherwise stay a
   // normal terminal item. Listen for the dispatched event, and apply any verdict
@@ -377,8 +584,13 @@ const bind = async ($item, item) => {
   const standing = window.workflow?.getLock?.($item.parents('.page').data('key') || 'page', item.id)
   if (standing) applyLock(standing)
 
-  // run — one-shot capture, no terminal UI (HOST directive ssh's out)
-  $tools.find('.t-run').on('click', () => run($item, script, base, opts.host))
+  // run — one-shot capture, no terminal UI (HOST directive ssh's out).
+  // Resolve first so the run can source the same secrets the terminal would.
+  $tools.find('.t-run').on('click', async () => {
+    const session = sessionName(item, opts.session)
+    await resolveNeeds(base, session, opts.needs, $box)
+    run($item, scriptFor($box, script, opts.needs), base, opts.host, session)
+  })
 
   // terminal — toggle the live area. Opening attaches (once) and pastes the
   // script ready to run; closing hides the area but keeps the session alive.
@@ -387,13 +599,13 @@ const bind = async ($item, item) => {
   // both the panel's visibility and the button's active style from it. The item
   // element survives fedwiki re-binding the plugin (which rebuilds the toolbar
   // buttons), so the state can't be wiped out from under us.
-  const setOpen = open => {
+  const setOpen = async open => {
     $box.toggleClass('term-open', open)
     if (!open) return $panel.removeClass('zoomed')
-    const handle = attach($item, item, base, opts)
+    const handle = await armed()
     $item.find('.terminal-name').text(sessionName(item, opts.session) + (opts.host ? ` @${opts.host}` : ''))
     if (!$item.data('pasted')) {
-      pasteScript(handle, script)
+      pasteScript(handle, scriptFor($box, script, opts.needs))
       $item.data('pasted', true)
     }
     requestAnimationFrame(() => { handle.refit(); handle.term.focus() })
@@ -402,7 +614,8 @@ const bind = async ($item, item) => {
   $item.find('.t-close').on('click', () => setOpen(false))
 
   // paste — re-paste the (possibly edited) script at the prompt
-  $item.find('.t-paste').on('click', () => pasteScript(attach($item, item, base, opts), script))
+  $item.find('.t-paste').on('click', async () =>
+    pasteScript(await armed(), scriptFor($box, script, opts.needs)))
 
   // ⏎ — press Return to run whatever is at the prompt
   $item.find('.t-enter').on('click', () => attach($item, item, base, opts).send('\r'))
@@ -423,6 +636,163 @@ const bind = async ($item, item) => {
     window.open(`${base}/terminal/page?session=${sessionName(item, opts.session)}` +
       (opts.host ? `&host=${encodeURIComponent(opts.host)}` : ''), '_blank')
   )
+
+  // BUTTON mode — one click sends the script into the live session and presses
+  // Return, without opening the panel: the way to drive a long-lived REPL
+  // (e.g. Claude Code) waiting at the shared session's prompt. The button was
+  // emitted disabled; only a healthy local service reaches this line, so arm it
+  // now. paste-then-Enter ordering is safe: pasteScript resolves on the
+  // shell's ready handshake, by which time the socket is open, and send()
+  // preserves order on one socket.
+  if (opts.button) {
+    const $go = $box.find('.t-go')
+    const label = $go.text()
+    // A button's script belongs to the CLICK: opening the terminal view is
+    // just a window onto the session, never a paste (a REPL mid-boot must not
+    // be fed the prompt early, and a watcher expects to watch, not to type).
+    $item.data('pasted', true)
+
+    // GUARD — a readiness test run one-shot on the service (exit 0 = ready).
+    // While it fails, the button is a fix-it affordance: it opens the live
+    // terminal (booting the REPL if BOOT says so) so the reader settles the
+    // precondition — a /login, a missing tool — and it sends nothing.
+    const guardOk = async () => {
+      if (!opts.guard) return true
+      try {
+        const res = await fetch(`${base}/terminal/run`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: opts.guard, timeout: 20 }),
+        })
+        return (await res.json()).exit === 0
+      } catch { return false }
+    }
+    const showGuard = ok => {
+      $go.toggleClass('t-go-guard', !ok)
+      $go.text(ok ? label : (opts.guardLabel || 'setup needed'))
+      $go.attr('title', ok
+        ? `send to session ${sessionName(item, opts.session)}`
+        : `${opts.guard} — failing; click to open the terminal and put it right`)
+    }
+    const freshSession = async () => {
+      try {
+        const res = await fetch(`${base}/terminal/health`, { signal: AbortSignal.timeout(1500) })
+        const j = await res.json()
+        return !(j.sessions || []).includes(sessionName(item, opts.session))
+      } catch { return false } // health raced away — treat as live, paste plainly
+    }
+
+    // After a send, the agent on the other end may rewrite THIS page (tick a
+    // phase, walk the button). The stored page changes but the rendered one
+    // doesn't — so watch the page's own json and, once its journal grows and
+    // settles, reload so the reader sees the work land. Pulsing border while
+    // watching; gives up quietly after ten minutes.
+    const slug = ($item.parents('.page').attr('id') || '').replace(/_rev\d+$/, '')
+    const journalLen = async () => {
+      try {
+        const res = await fetch(`/${slug}.json`, {
+          cache: 'no-store', signal: AbortSignal.timeout(3000) })
+        return ((await res.json()).journal || []).length
+      } catch { return null }
+    }
+    const watchPage = async () => {
+      if (!slug || $go.data('watching')) return
+      $go.data('watching', true).addClass('t-go-watch')
+      const start = await journalLen()
+      const t0 = Date.now()
+      let grown = null
+      while (Date.now() - t0 < 10 * 60 * 1000) {
+        await new Promise(resolve => setTimeout(resolve, 4000))
+        if (!document.contains($go.get(0))) return
+        const len = await journalLen()
+        if (len == null || start == null) continue
+        if (grown != null && len === grown) return window.location.reload()
+        if (len > start) grown = len
+      }
+      $go.removeClass('t-go-watch').data('watching', false)
+    }
+
+    // The guard state changes outside the page — a /login in the open
+    // terminal, a logout in another window — so a guarded button watches
+    // both ways and wears the truth on its face: briskly (5s) while failing,
+    // gently (15s) while passing. The watch dies with the wrapper (an edit
+    // re-emits a fresh one).
+    let guardWatching = false
+    const watchGuard = () => {
+      if (guardWatching) return
+      guardWatching = true
+      const tick = async () => {
+        if (!document.contains($go.get(0))) { guardWatching = false; return }
+        if (!$go.data('busy')) showGuard(await guardOk())
+        setTimeout(tick, $go.hasClass('t-go-guard') ? 5000 : 15000)
+      }
+      setTimeout(tick, 5000)
+    }
+
+    // No actionable face until the first guard verdict: a wrong face for the
+    // first second reads as a bug (and invites a wrong click).
+    if (opts.guard) {
+      $go.prop('disabled', true).text('checking…')
+      guardOk().then(ok => {
+        $go.prop('disabled', false)
+        showGuard(ok)
+        watchGuard()
+      })
+    } else {
+      $go.prop('disabled', false)
+        .attr('title', `send to session ${sessionName(item, opts.session)}`)
+    }
+
+    $go.on('click', async () => {
+      if ($go.data('busy')) return
+      $go.data('busy', true).prop('disabled', true)
+      try {
+        const ok = await guardOk()
+        // BOOT: when this click is what creates the session, run the boot
+        // command first (start the REPL) and wait for its first screen to
+        // finish drawing. An already-live session is assumed booted.
+        const fresh = (opts.boot || !ok) ? await freshSession() : false
+        const handle = await armed()
+        if (opts.boot && fresh) {
+          $go.text('starting…')
+          await handle.ready
+          handle.send(opts.boot + '\r')
+          await awaitQuiet(handle)
+        }
+        if (!ok) {
+          // Precondition unmet: present the terminal, not the prompt — the
+          // REPL is sitting exactly where the fix happens (e.g. /login).
+          // Zoomed, because a full-screen TUI is unreadable in the small
+          // in-column box; Escape drops back to the page.
+          showGuard(false)
+          await setOpen(true)
+          $panel.addClass('zoomed')
+          requestAnimationFrame(() => { handle.refit(); handle.term.focus() })
+          return
+        }
+        // BUTTON: show — do the sending in the open, so a closed panel never
+        // leaves the reader wondering whether anything happened.
+        if (opts.buttonShow && !$box.hasClass('term-open')) await setOpen(true)
+        await pasteScript(handle, scriptFor($box, script, opts.needs))
+        // A TUI needs a beat to digest a paste before Return registers as
+        // "submit" — wait for its echo to settle instead of racing it.
+        await awaitQuiet(handle, 350, 2500)
+        handle.send('\r')
+        $go.text('sent ✓').addClass('t-go-sent')
+        watchPage()
+      } finally {
+        setTimeout(() => {
+          $go.removeClass('t-go-sent').prop('disabled', false).data('busy', false)
+          if (opts.guard) guardOk().then(showGuard) // the standing watch carries on
+          else $go.text(label)
+        }, 2000)
+      }
+    })
+    // The script pane is hidden, so its dblclick-to-edit is out of reach:
+    // dblclick on the row (not the button itself) opens the editor instead.
+    $box.find('.terminal-go').on('dblclick', event => {
+      if (!event.target.closest('button')) wiki.textEditor($item, item)
+    })
+  }
 }
 
 // Register the terminal adapter on the shared workflow registry (idempotent;
