@@ -30,3 +30,14 @@ if (watch) {
   await fs.writeFile('meta-client.json', JSON.stringify(results.metafile))
   console.log("\n  esbuild metadata written to 'meta-client.json'.")
 }
+
+// Modern face (Suite Quarantine migration): display slice as a plain ES module.
+import esbuildModern from 'esbuild'
+esbuildModern.build({
+  entryPoints: ['src/client/terminal-modern.js'],
+  bundle: true,
+  format: 'esm',
+  outfile: 'client/terminal.mjs',
+  sourcemap: true,
+  minify: true,
+}).then(() => console.log('built client/terminal.mjs (modern)'))

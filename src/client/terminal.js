@@ -39,7 +39,7 @@ import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
 import { expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, originTrust,
   parseDirectives, schemeFor, attachResult, applyNeeds, resolveScript, needsPayload,
-  needWarnings, buttonLabel } from './helpers.js'
+  needWarnings, buttonLabel, STYLE } from './helpers.js'
 
 hljs.registerLanguage('bash', bash)
 
@@ -51,101 +51,6 @@ const highlightScript = text => hljs.highlight(text || '', { language: 'bash' })
 // override with inline styles at open time.
 const THEME = schemeFor('dark')
 
-const STYLE = `
-  .terminal-item .terminal-script { background:#fff8e6; border-left:3px solid #ffb000 }
-  .terminal-item .terminal-script code.hljs { background:transparent;
-    white-space:pre-wrap; padding:6px }
-  .terminal-item .term-need { border-radius:3px; padding:0 3px; cursor:pointer;
-    border-bottom:1px dotted currentColor; font-weight:600 }
-  .terminal-item .term-need-keychain { color:#6f42c1; background:#f3eeff }
-  .terminal-item .term-need-value { color:#0a7d5a; background:#e7f6f0 }
-  .terminal-item .term-need-ask { color:#1c5fa8; background:#e8f1fc;
-    border-bottom:1px dashed currentColor; cursor:text; outline:none }
-  .terminal-item .term-need-ask:focus { background:#d7e8fb }
-  .terminal-item select.term-need { appearance:auto; font:inherit; font-weight:600;
-    border:1px solid currentColor; border-radius:3px; padding:0 2px; max-width:16em }
-  .terminal-item select.term-need-sshhost { color:#0a7d5a; background:#e7f6f0 }
-  .terminal-item select.term-need-vault { color:#6f42c1; background:#f3eeff }
-  .terminal-item select.term-need-claudesession { color:#1c5fa8; background:#e8f1fc;
-    max-width:24em }
-  .terminal-item .terminal-needs-hint:not(:empty) { font-size:11px; color:#8a6d00;
-    background:#fff8e6; border-left:3px solid #ffb000; padding:2px 6px; margin-top:4px }
-  .terminal-item .terminal-tools { margin-top:4px }
-  .terminal-item .terminal-tools button { margin-right:4px; font-size:11px }
-  .terminal-item.term-open .terminal-tools .t-term { background:#333; color:#fff }
-  .terminal-item .terminal-reply { margin-top:4px }
-  .terminal-item .terminal-reply pre.hljs { margin:0; padding:6px }
-  .terminal-item .terminal-reply pre.stderr code { color:#f14c4c }
-  .terminal-item .terminal-reply .exit { font-size:10px; color:#888 }
-  .terminal-item .terminal-panel { display:none; margin-top:6px; border-radius:4px;
-    overflow:hidden; background:${THEME.background} }
-  .terminal-item.term-open .terminal-panel { display:block }
-  .terminal-item .terminal-bar { display:flex; align-items:center;
-    justify-content:space-between; padding:3px 6px; background:#2d2d2d;
-    color:#bbb; font-size:11px; font-family:monospace }
-  .terminal-item .terminal-bar .terminal-name { opacity:.8 }
-  .terminal-item .terminal-bar button { background:none; border:none;
-    color:#bbb; cursor:pointer; font-size:12px; padding:1px 5px; margin-left:2px }
-  .terminal-item .terminal-bar button:hover { color:#fff; background:#444;
-    border-radius:3px }
-  .terminal-item .terminal-host { height:240px; padding:6px;
-    background:${THEME.background} }
-  .terminal-item .terminal-panel.zoomed { position:fixed; inset:0; z-index:9999;
-    margin:0; border-radius:0; display:flex; flex-direction:column }
-  .terminal-item .terminal-panel.zoomed .terminal-host { flex:1; height:auto }
-
-  /* BUTTON mode: the script pane gives way to one text button. Amber matches
-     the runnable script accent; the transient sent state borrows the green of
-     a resolved need. The expand affordance stays the usual t-term toggle. */
-  .terminal-item .terminal-go { display:none }
-  .terminal-item.term-button-mode .terminal-script { display:none }
-  .terminal-item.term-button-mode .terminal-go { display:block; margin:2px 0;
-    text-align:right }
-  .terminal-item.term-button-mode .terminal-tools { text-align:right }
-  .terminal-item .t-go { font:600 13px/1.4 sans-serif; padding:6px 16px;
-    border-radius:6px; border:1px solid #ffb000; background:#fff8e6;
-    color:#7a5800; cursor:pointer }
-  .terminal-item .t-go:hover:not(:disabled) { background:#ffefc2 }
-  .terminal-item .t-go:disabled { opacity:.45; cursor:default }
-  .terminal-item .t-go.t-go-sent { background:#e7f6f0; border-color:#0a7d5a;
-    color:#0a7d5a }
-  .terminal-item .t-go.t-go-guard { background:#e8f1fc; border-color:#1c5fa8;
-    color:#1c5fa8 }
-  .terminal-item .t-go.t-go-watch { animation: t-go-pulse 2s ease-in-out infinite }
-  @keyframes t-go-pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(255,176,0,0) }
-    50% { box-shadow: 0 0 0 4px rgba(255,176,0,.35) }
-  }
-  .terminal-item.term-button-mode.wf-locked .terminal-go { display:none }
-
-  /* workflow-gated step (wiki-plugin-termflow locked this item via a
-     'workflow-lock' event): no toolbar. A red left bar and faint red tint
-     mark it clearly as a *blocked* terminal step — distinct from a runnable
-     step's amber bar — until its guard passes and it unlocks. */
-  .terminal-item .wf-lock-hint { display:none; margin-top:3px; font-size:11px; color:#b03a3a }
-  .terminal-item .wf-lock-hint::before { content:'🔒 ' }
-  .terminal-item.wf-locked .terminal-script { background:#fdecec;
-    border-left:3px solid #d64545; opacity:.9 }
-  .terminal-item.wf-locked .terminal-tools { display:none }
-  .terminal-item.wf-locked .wf-lock-hint { display:block }
-
-  /* bash token palette, scoped to terminal items. Self-contained on purpose:
-     the code plugin only ships highlight.css from 0.6.0, so borrowing it
-     404s on farms with an older wiki core. Scoping keeps a newer code
-     plugin's own theme untouched. */
-  .terminal-item .hljs-comment { color:#6a737d }
-  .terminal-item .hljs-keyword { color:#d73a49 }
-  .terminal-item .hljs-string { color:#032f62 }
-  .terminal-item .hljs-built_in { color:#005cc5 }
-  .terminal-item .hljs-variable, .terminal-item .hljs-template-variable { color:#e36209 }
-  .terminal-item .hljs-number, .terminal-item .hljs-literal { color:#005cc5 }
-  .terminal-item .hljs-meta { color:#032f62 }
-  .terminal-item .hljs-title, .terminal-item .hljs-function { color:#6f42c1 }
-`
-
-// Stylesheets to load: only the plugin's own bundle (xterm.css — without it
-// the hidden helper textarea renders as a visible box). Script and captured
-// output styling is fully self-contained in STYLE above.
 const LINK_CSS = ['/plugins/terminal/terminal.css']
 
 const ensureAssets = () => {
