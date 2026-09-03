@@ -39,7 +39,7 @@ import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
 import { expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, originTrust,
   parseDirectives, schemeFor, attachResult, applyNeeds, resolveScript, needsPayload,
-  needWarnings, buttonLabel, STYLE } from './helpers.js'
+  needWarnings, buttonLabel, STYLE, serviceOrigin, pageRef, isLocalHost } from './helpers.js'
 
 hljs.registerLanguage('bash', bash)
 
@@ -79,6 +79,88 @@ const healthy = async base => {
   }
 }
 
+// ── Where the page lives, and what this machine trusts ──────────────────────
+//
+// The lineup carries each page's home site; a page of the site being viewed
+// has none, so the view host stands in. The browser's own origin decides
+// whether a run needs the person's grant (Unlock): a public page driving the
+// local shell must hold one; a *.localhost page never does.
+const pageContext = ($item, item) => {
+  const $page = $item.parents('.page')
+  const site = $page.data('site') || window.location.hostname
+  const ref = pageRef(site, $page.attr('id') || '', item.id)
+  const isLocalPage = isLocalHost(String(site)) || Boolean(window.isLocalMirror)
+  const isLocalOrigin = isLocalHost(window.location.hostname) || Boolean(window.isLocalMirror)
+  return { ref, isLocalPage, isLocalOrigin, site: String(site) }
+}
+
+// The trust list lives with the service (~/.config/wiki-plugin-terminal/
+// trust.json), not in the browser: fetched once per page load. While the
+// fetch is in flight emit sees no list and chips stay plain; bind waits.
+const trustList = base => {
+  if (!window.wikiTerminalTrust) {
+    window.wikiTerminalTrust = fetch(`${base}/terminal/trust`, {
+      headers: authHeaders(base), signal: AbortSignal.timeout(2500) })
+      .then(r => (r.ok ? r.json() : { sites: [] }))
+      .then(t => { window.wikiTerminalTrustSites = t.sites || []; return t })
+      .catch(() => ({ sites: [] }))
+  }
+  return window.wikiTerminalTrust
+}
+
+// Unlock: a grant the person minted on the service's own page, handed back
+// by postMessage and kept per tab. Sent as a bearer; websockets send it as
+// their first frame. Never a cookie (third-party cookies are blocked).
+const grantKey = base => `wiki-terminal-unlock:${serviceOrigin(base)}`
+const grantOf = base => {
+  try {
+    const raw = sessionStorage.getItem(grantKey(base))
+    if (!raw) return null
+    const g = JSON.parse(raw)
+    if (g.exp * 1000 < Date.now()) { sessionStorage.removeItem(grantKey(base)); return null }
+    return g.token
+  } catch { return null }
+}
+const authHeaders = base => {
+  const token = grantOf(base)
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+const unlock = base => new Promise(resolve => {
+  const origin = serviceOrigin(base)
+  const onMessage = event => {
+    if (event.origin !== origin || !event.data) return
+    if (event.data.type === 'wiki-terminal-unlock') {
+      try { sessionStorage.setItem(grantKey(base), JSON.stringify({ token: event.data.token, exp: event.data.exp })) } catch {}
+      window.removeEventListener('message', onMessage)
+      resolve(true)
+    } else if (event.data.type === 'wiki-terminal-lock') {
+      try { sessionStorage.removeItem(grantKey(base)) } catch {}
+    }
+  }
+  window.addEventListener('message', onMessage)
+  const popup = window.open(`${base}/terminal/unlock?origin=${encodeURIComponent(window.location.origin)}`,
+    'wiki-terminal-unlock', 'popup,width=520,height=520')
+  if (!popup) { window.removeEventListener('message', onMessage); resolve(false) }
+  const poll = setInterval(() => {
+    if (popup && popup.closed) { clearInterval(poll); window.removeEventListener('message', onMessage); resolve(Boolean(grantOf(base))) }
+  }, 500)
+})
+
+// One POST to the service with the page's provenance and the person's grant;
+// a 401 means locked — offer the unlock once and retry.
+const post = async (base, path, body, ctx) => {
+  const send = () => fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders(base) },
+    body: JSON.stringify(body),
+  })
+  let res = await send()
+  if (res.status === 401 && ctx && !ctx.isLocalOrigin) {
+    if (await unlock(base)) res = await send()
+  }
+  return res
+}
+
 const emit = ($item, item) => {
   ensureAssets()
   const opts = parseDirectives(item.text)
@@ -87,10 +169,10 @@ const emit = ($item, item) => {
   // viewer is merely browsing, declared names stay plain text. Computed here
   // (not in bind) because emit renders the script pane.
   const originSite = $item.parents('.page').data('site') || window.location.hostname
-  const trust = originTrust(originSite, window.isLocalMirror, window.trustedAuthors)
-  // BUTTON mode only ever activates on the viewer's own page — anywhere else
-  // the item degrades to the plain script block, display-only like any other.
-  const buttonMode = opts.button && trust === 'local'
+  const trust = originTrust(originSite, window.isLocalMirror, window.wikiTerminalTrustSites)
+  // BUTTON mode renders as a button on the viewer's own page and on a trusted
+  // page (where the click goes through the service's verified paste).
+  const buttonMode = opts.button && trust !== 'inert'
   $item.append(`
     <div class="terminal-item${buttonMode ? ' term-button-mode' : ''}">
       <pre class="terminal-script hljs"><code class="hljs language-bash">${applyNeeds(highlightScript(script), needs, trust)}</code></pre>
@@ -194,26 +276,25 @@ const bindNeeds = ($item, item) => {
   })
 }
 
-const renderReply = ($item, { stdout, stderr, exit }) => {
+const renderReply = ($item, { stdout, stderr, exit, verified }) => {
   $item.find('.terminal-reply').html(`
     ${stderr ? `<pre class="stderr hljs"><code class="hljs">${expand(stderr)}</code></pre>` : ''}
     <pre class="hljs"><code class="hljs">${expand(stdout || '')}</code></pre>
-    <span class="exit">exit ${exit}</span>
+    <span class="exit">exit ${expand(exit)}${verified && verified.site ? ` · verified · ${expand(verified.site)}` : ''}</span>
   `)
 }
 
 // A HOST directive routes the run through ssh on the named host (the service
 // allowlists it and uses the viewer's own key); without it, the local shell.
-const run = async ($item, script, base, host, session) => {
+const run = async ($item, script, base, host, session, ctx, item) => {
   $item.trigger('terminal-run', { script })
   $item.find('.terminal-reply').html('<span class="exit">running…</span>')
   try {
-    const res = await fetch(`${base}/terminal/run`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: script || '', host: host || null,
-        session: session || null }),
-    })
+    const body = { text: script || '', host: host || null, session: session || null }
+    // A page that is not local says where it lives and what it publishes; the
+    // service checks that against the site itself before anything runs.
+    if (ctx && (!ctx.isLocalPage || !ctx.isLocalOrigin)) { body.page = ctx.ref; body.source = item ? item.text : undefined }
+    const res = await post(base, '/terminal/run', body, ctx)
     renderReply($item, await res.json())
   } catch (err) {
     renderReply($item, { stdout: '', stderr: String(err), exit: -1 })
@@ -278,6 +359,11 @@ const attach = ($item, item, base, opts = {}) => {
   const hostQuery = opts.host ? `?host=${encodeURIComponent(opts.host)}` : ''
   const socket = new WebSocket(wsUrl(base, `/terminal/pty/${sessionName(item, opts.session)}${hostQuery}`))
   socket.binaryType = 'arraybuffer'
+  // From a public origin the pty asks for the person's grant as its first frame.
+  if (!(isLocalHost(window.location.hostname) || window.isLocalMirror)) {
+    const token = grantOf(base)
+    socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'auth', token })), { once: true })
+  }
   const decoder = new TextDecoder()
   const scan = makeCaptureScanner(result => $item.trigger('terminal-result', result))
 
@@ -409,12 +495,22 @@ const bind = async ($item, item) => {
   // viewed has none, so fall back to the view host. A public page a viewer is
   // merely browsing stays inert (display only, like the code plugin); the
   // viewer's own local page runs live; a trusted remote page is *offered*.
-  const originSite = $item.parents('.page').data('site') || window.location.hostname
-  const trust = originTrust(originSite, window.isLocalMirror, window.trustedAuthors)
+  const ctx = pageContext($item, item)
+  // The service's own base first (it holds the trust list); a page-named
+  // service is honoured only on the viewer's own page.
+  let base = serviceBase(item, window.location.protocol, ctx.isLocalPage)
+  // From a public https page a loopback name is reachable over plain http
+  // (a potentially trustworthy origin, exempt from mixed content) and needs
+  // no locally trusted certificate; try the page's scheme, then the other.
+  if (!(await healthy(base))) {
+    const other = base.startsWith('https:') ? base.replace(/^https:/, 'http:') : base.replace(/^http:/, 'https:')
+    if (item.service && ctx.isLocalPage) return
+    if (!(await healthy(other))) return // no local pty reachable: display only
+    base = other
+  }
+  const trusted = await trustList(base)
+  const trust = originTrust(ctx.site, window.isLocalMirror, trusted.sites)
   if (trust === 'inert') return
-
-  const base = serviceBase(item, window.location.protocol)
-  if (!(await healthy(base))) return // no local pty reachable: display only
 
   // Guard against fedwiki binding the *same* rendered item twice (the async
   // health check above can let two binds interleave). Key the flag on the
@@ -437,9 +533,59 @@ const bind = async ($item, item) => {
   // deliberate consent is the whole point of instructing a local shell from a
   // page you did not write.
   if (trust === 'trusted') {
+    // A trusted REMOTE page: the service verifies the script against the
+    // page as its home site publishes it before anything runs, and a public
+    // origin also needs the person's grant. Everything is a click; nothing
+    // runs on view — a GUARD is a button here, never a poll.
     const $tools = $item.find('.terminal-tools')
-    $tools.html(`<button class="t-run-remote" title="run this script from ${expand(originSite)} on your own machine">▶ run · from ${expand(originSite)}</button>`)
-    $tools.find('.t-run-remote').on('click', () => run($item, script, base, opts.host))
+    const site = expand(ctx.site)
+    $tools.html(`
+      <span class="t-verify" title="checking with ${site}…">verifying…</span>
+      <button class="t-run-remote" title="run this script, as ${site} publishes it, on your own machine">▶ run · ${site}</button>
+      ${opts.guard ? `<button class="t-check" title="run the GUARD test: ${expand(opts.guard)}">check</button>` : ''}
+      ${!ctx.isLocalOrigin ? `<button class="t-unlock" title="allow ${expand(window.location.origin)} to run verified scripts on this machine">unlock</button>` : ''}
+    `)
+    const $verify = $tools.find('.t-verify')
+    const showVerdict = v => {
+      if (v.ok) $verify.text(`verified · ${v.site || ctx.site}${v.locked ? ' · locked' : ''}`).attr('title', v.at || '')
+      else $verify.text('not verified').attr('title', v.why || '')
+      $tools.find('.t-run-remote, .t-check').prop('disabled', !v.ok)
+      $tools.find('.t-unlock').toggle(Boolean(v.locked))
+    }
+    const verify = async () => {
+      try {
+        const res = await post(base, '/terminal/verify', { source: item.text, page: ctx.ref })
+        showVerdict(await res.json())
+      } catch (err) { showVerdict({ ok: false, why: String(err) }) }
+    }
+    verify()
+    $tools.find('.t-run-remote').on('click', () => run($item, script, base, opts.host, null, ctx, item))
+    $tools.find('.t-unlock').on('click', async () => { await unlock(base); verify() })
+    $tools.find('.t-check').on('click', async () => {
+      try {
+        const res = await post(base, '/terminal/check',
+          { guards: [{ id: item.id, test: opts.guard }], page: ctx.ref, source: item.text, timeout: 20 }, ctx)
+        const j = await res.json()
+        const ok = j.results && j.results[item.id]
+        $item.find('.terminal-reply').html(`<span class="exit">${ok ? 'guard passes' : `guard fails${j.error ? ` — ${expand(j.error)}` : ''}`}</span>`)
+      } catch (err) { renderReply($item, { stdout: '', stderr: String(err), exit: -1 }) }
+    })
+    // BUTTON on a trusted page: the click sends the verified script into a
+    // live session on this machine through the service, never the raw socket.
+    if (opts.button) {
+      const $go = $box.find('.t-go')
+      $go.prop('disabled', false).attr('title', `send to session ${sessionName(item, opts.session)} on this machine`)
+      $go.on('click', async () => {
+        $go.prop('disabled', true)
+        try {
+          const res = await post(base, '/terminal/paste',
+            { session: sessionName(item, opts.session), text: script, page: ctx.ref, source: item.text }, ctx)
+          const j = await res.json()
+          $go.text(j.ok ? 'sent ✓' : (j.error || 'refused')).toggleClass('t-go-sent', Boolean(j.ok))
+        } catch (err) { $go.text(String(err)) }
+        setTimeout(() => $go.prop('disabled', false).removeClass('t-go-sent').text(buttonLabel(opts)), 2500)
+      })
+    }
     return
   }
 
@@ -714,4 +860,8 @@ const registerWorkflowAdapter = () => {
 if (typeof window !== 'undefined') {
   window.plugins.terminal = { emit, bind }
   registerWorkflowAdapter()
+  // Trust used to be a browser list set here; it now lives with the service.
+  if (!window.trustAuthor) {
+    window.trustAuthor = site => console.log(`trust now lives in ~/.config/wiki-plugin-terminal/trust.json — add "${site}" to its sites list`)
+  }
 }

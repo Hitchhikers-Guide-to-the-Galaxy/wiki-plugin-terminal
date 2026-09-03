@@ -22,6 +22,9 @@ checks the Origin header against local wiki hosts.
 
 import asyncio
 import fcntl
+import hashlib
+import hmac
+import ipaddress
 import json
 import os
 import re
@@ -31,7 +34,11 @@ import signal
 import struct
 import subprocess
 import termios
-from datetime import datetime
+import threading
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
 
 import pty as pty_module
 
@@ -370,15 +377,340 @@ def _origin_host(origin: str) -> str:
 
 
 def _local_host(host: str) -> bool:
-    # Only loopback-local origins may reach the pty. NOT *.fish: a public .fish
-    # page must never instruct the local shell — trusted remote pages run via
-    # the *viewer's own* localhost origin (arming happens client-side), so the
-    # service only ever legitimately sees a localhost/*.localhost Origin.
-    return host in ("localhost", "127.0.0.1", "::1") or host.endswith(".localhost")
+    return host in ("localhost", "127.0.0.1", "::1", "[::1]") or host.endswith(".localhost")
+
+
+# ── Trust: whose text may run ──────────────────────────────────────────────────
+#
+# A page the viewer merely browses is display-only. A page from a site the
+# viewer TRUSTS may run — but the browser's word for "this page came from
+# plan.ide.earth" is a DOM attribute any script on the origin can write. So
+# the service does not take the browser's word: for a page that is not local
+# it fetches the page from its home site itself and requires the item text to
+# be byte-equal to what the browser sent. Publication is the signature — only
+# the site's owner can publish there. The trusted sites live in a file beside
+# the vault, never in the browser (a co-resident script could set a window
+# global; it cannot write ~/.config).
+#
+#   ~/.config/wiki-plugin-terminal/trust.json
+#   { "sites": ["plan.ide.earth"], "keys": {}, "verify_local": false }
+#
+# `keys` is reserved for signed items (BIP-340, the Terminal Trust Plan's
+# Phase 3): a signature by a listed key passes offline on any site.
+TRUST_PATH = os.path.expanduser(
+    os.environ.get("WIKI_TERMINAL_TRUST", "~/.config/wiki-plugin-terminal/trust.json")
+)
+SITE_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
+SLUG_NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+ITEM_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+PAGE_FETCH_TIMEOUT = 5.0
+PAGE_FETCH_CAP = 2_000_000
+PAGE_CACHE_TTL = 30.0
+
+
+class TrustStore:
+    """trust.json, reloaded when its mtime changes — edits need no restart.
+    A missing or broken file means no trusted sites: the door closes."""
+
+    def __init__(self, path: str = TRUST_PATH):
+        self.path = path
+        self._mtime: float | None = None
+        self._data: dict = {}
+
+    def load(self) -> dict:
+        try:
+            mtime = os.stat(self.path).st_mtime
+        except OSError:
+            self._mtime, self._data = None, {}
+            return self._data
+        if mtime != self._mtime:
+            try:
+                with open(self.path) as f:
+                    data = json.load(f)
+                self._data = data if isinstance(data, dict) else {}
+            except (OSError, ValueError) as e:
+                print(f"caution: {self.path}: {e}")
+                self._data = {}
+            self._mtime = mtime
+        return self._data
+
+    def sites(self) -> set[str]:
+        raw = self.load().get("sites", [])
+        return {str(x).lower() for x in raw if isinstance(x, str) and SITE_NAME.match(str(x).lower())}
+
+    def keys(self) -> dict:
+        keys = self.load().get("keys", {})
+        return keys if isinstance(keys, dict) else {}
+
+    def verify_local(self) -> bool:
+        return bool(self.load().get("verify_local", False))
+
+    def public(self) -> dict:
+        """What a client may know: names, never secrets."""
+        return {
+            "sites": sorted(self.sites()),
+            "keys": {k: (v.get("id") if isinstance(v, dict) else None) for k, v in self.keys().items()},
+            "verify_local": self.verify_local(),
+        }
+
+
+trust = TrustStore()
+
+
+def _private_address(host: str) -> bool:
+    """A trusted site is fetched over the network; never let that fetch be
+    steered at loopback, link-local or RFC1918 space (the SSRF door)."""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+
+
+def site_trusted(site: str | None) -> bool:
+    if not site:
+        return False
+    site = site.lower()
+    return site in trust.sites() and not _private_address(site)
+
+
+def allowed_origin(origin: str | None) -> bool:
+    """The one predicate every door asks: a local origin, or the https origin
+    of a trusted site. Used by the HTTP gate, the websocket gate and the CORS
+    layer, so there is one answer and not three."""
+    if not origin:
+        return False
+    host = _origin_host(origin)
+    if _local_host(host):
+        return True
+    return origin.lower().startswith("https://") and site_trusted(host)
+
+
+class PageRef(BaseModel):
+    site: str
+    slug: str
+    itemId: str
+
+
+_page_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+_page_lock = threading.Lock()
+
+
+def _fetch_page_raw(url: str) -> dict:
+    req = urllib.request.Request(url, headers={"Accept": "application/json",
+                                               "User-Agent": "wiki-plugin-terminal/verify"})
+    with urllib.request.urlopen(req, timeout=PAGE_FETCH_TIMEOUT) as resp:
+        body = resp.read(PAGE_FETCH_CAP + 1)
+    if len(body) > PAGE_FETCH_CAP:
+        raise ValueError("page too large")
+    return json.loads(body.decode("utf-8"))
+
+
+# Test seam: a test replaces fetch_page with a stub.
+fetch_page = _fetch_page_raw
+
+
+def _cached_page(site: str, slug: str, scheme: str) -> dict:
+    key = (site, slug)
+    now = time.monotonic()
+    with _page_lock:
+        hit = _page_cache.get(key)
+        if hit and now - hit[0] < PAGE_CACHE_TTL:
+            return hit[1]
+    page = fetch_page(f"{scheme}://{site}/{slug}.json")
+    with _page_lock:
+        _page_cache[key] = (now, page)
+    return page
+
+
+class Verdict(BaseModel):
+    ok: bool
+    why: str = ""
+    site: str | None = None
+    signed_by: str | None = None
+    at: str | None = None
+    status: int = 403
+    locked: bool = False
+
+
+def verify_publication(text: str, ref: PageRef | None) -> Verdict:
+    """Does the site the page claims as home publish this exact text?
+
+    The text must be byte-equal to the terminal item on the page as the site
+    serves it. No trimming and no normalisation: one changed byte is a
+    different script, and a different script is not what was published."""
+    if ref is None:
+        return Verdict(ok=False, why="no page reference: a script from a non-local page must say where it lives")
+    site, slug, item_id = ref.site.lower(), ref.slug, ref.itemId
+    if not SITE_NAME.match(site) or not SLUG_NAME.match(slug) or not ITEM_ID.match(item_id):
+        return Verdict(ok=False, why="malformed page reference")
+    local = _local_host(site)
+    if not local and not site_trusted(site):
+        return Verdict(ok=False, why=f"{site} is not a trusted site — add it to trust.json to accept its scripts")
+    try:
+        page = _cached_page(site, slug, "http" if local else "https")
+    except (urllib.error.URLError, ValueError, OSError, TimeoutError) as e:
+        return Verdict(ok=False, why=f"could not read {site}/{slug} to verify the script: {e}")
+    for item in page.get("story") or []:
+        if not isinstance(item, dict) or item.get("id") != item_id:
+            continue
+        if item.get("type") != "terminal":
+            return Verdict(ok=False, why="the referenced item is not a terminal item")
+        if item.get("text") != text:
+            return Verdict(ok=False, why=f"the script differs from what {site} publishes — edited, or not yet saved")
+        return Verdict(ok=True, site=site, at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    return Verdict(ok=False, why=f"{site}/{slug} has no item {item_id}")
+
+
+def page_is_local(ref: PageRef | None) -> bool:
+    return ref is not None and _local_host(ref.site.lower())
+
+
+def must_verify(request: Request, ref: PageRef | None) -> bool:
+    """Which runs go through publication verification: any from a non-local
+    Origin, any whose page reference names a non-local site, and — when the
+    operator asks for it — local pages too (verify_local closes the
+    foreign-page-in-the-lineup hole for the private farm at one GET per run)."""
+    origin = request.headers.get("origin")
+    if origin and not _local_host(_origin_host(origin)):
+        return True
+    if ref is not None and not page_is_local(ref):
+        return True
+    return trust.verify_local() and ref is not None
+
+
+DIRECTIVE_LINE = re.compile(r"^[A-Z][A-Z0-9_]*(?::.*|\s.*)?$")
+
+
+def script_of(source: str) -> str:
+    """The runnable part of an item's text, the way the client strips it:
+    UPPERCASE directive lines (and blank lines among them) lead; the script is
+    everything after. Kept here so a verified SOURCE decides what may run,
+    rather than trusting the client's stripped copy."""
+    lines = (source or "").split("\n")
+    i = 0
+    while i < len(lines) and (not lines[i].strip() or DIRECTIVE_LINE.match(lines[i].strip())):
+        i += 1
+    return "\n".join(lines[i:])
+
+
+def guard_of(source: str) -> str | None:
+    for line in (source or "").split("\n"):
+        if line.startswith("GUARD:"):
+            return line[len("GUARD:"):].strip()
+    return None
+
+
+# ── Unlock: the person at this machine consents ──────────────────────────────
+#
+# Page trust says whose text may run. It says nothing about whether the person
+# at this keyboard wants a public page to drive their shell right now. So a
+# request from a non-local origin also needs a GRANT: a token the person minted
+# by clicking Unlock on a page served by this service, bound to the asking
+# origin, short-lived, revocable, and born of a secret that dies with the
+# process — a restart locks everything. No cookie: a cookie on this origin sent
+# from another site is a third-party cookie, which browsers block or
+# partition; the token goes back to the page by postMessage and lives in that
+# tab's sessionStorage.
+GRANT_DEFAULT = 30 * 60
+GRANT_MAX = 8 * 60 * 60
+_grant_secret = os.urandom(32)
+_grants: dict[str, tuple[str, int]] = {}  # nonce -> (origin, exp)
+_revoked: set[str] = set()
+
+
+def _b64u(b: bytes) -> str:
+    import base64
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def _unb64u(t: str) -> bytes:
+    import base64
+    return base64.urlsafe_b64decode(t + "=" * (-len(t) % 4))
+
+
+def mint_grant(origin: str, ttl: int | None = None) -> tuple[str, int]:
+    ttl = max(60, min(int(ttl or GRANT_DEFAULT), GRANT_MAX))
+    exp = int(time.time()) + ttl
+    nonce = _b64u(os.urandom(12))
+    payload = json.dumps({"o": origin, "exp": exp, "n": nonce}, separators=(",", ":")).encode()
+    sig = hmac.new(_grant_secret, payload, hashlib.sha256).hexdigest()
+    _grants[nonce] = (origin, exp)
+    return f"{_b64u(payload)}.{sig}", exp
+
+
+def check_grant(token: str | None, origin: str | None) -> bool:
+    if not token or not origin or "." not in token:
+        return False
+    body, _, sig = token.rpartition(".")
+    try:
+        payload = _unb64u(body)
+        want = hmac.new(_grant_secret, payload, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(want, sig):
+            return False
+        claims = json.loads(payload)
+    except (ValueError, TypeError):
+        return False
+    if claims.get("n") in _revoked or claims.get("o") != origin:
+        return False
+    return int(claims.get("exp", 0)) > time.time()
+
+
+def live_grants() -> list[dict]:
+    now = time.time()
+    for n, (o, exp) in list(_grants.items()):
+        if exp <= now or n in _revoked:
+            _grants.pop(n, None)
+    return [{"origin": o, "exp": exp, "nonce": n} for n, (o, exp) in _grants.items()]
+
+
+def lock_all() -> None:
+    global _grant_secret
+    _grant_secret = os.urandom(32)
+    _grants.clear()
+    _revoked.clear()
+
+
+def bearer_of(request: Request) -> str | None:
+    auth = request.headers.get("authorization", "")
+    if auth[:7].lower() == "bearer ":
+        return auth[7:].strip()
+    return None
+
+
+def origin_is_local(origin: str | None) -> bool:
+    return bool(origin) and _local_host(_origin_host(origin))
+
+
+def gate(request: Request, text: str, ref: PageRef | None, source: str | None = None) -> Verdict:
+    """The whole decision for a run, a check or a paste.
+
+    1. Origin: local, or the https origin of a trusted site.
+    2. Consent: a non-local origin needs a live grant for that origin.
+    3. Page: a non-local page (or any page when verify_local is on) must be
+       published byte-for-byte by its home site, and the text to run must be
+       the script of that published source."""
+    origin = request.headers.get("origin")
+    if not http_origin_allowed(request):
+        return Verdict(ok=False, why="forbidden origin", status=403)
+    if origin and not origin_is_local(origin):
+        if not check_grant(bearer_of(request), origin):
+            return Verdict(ok=False, why=f"locked: {origin} has no live grant on this machine — click Unlock",
+                           status=401, locked=True)
+    if must_verify(request, ref):
+        published = verify_publication(source if source is not None else text, ref)
+        if not published.ok:
+            return published
+        if source is not None and text != script_of(source):
+            return Verdict(ok=False, why="the text to run is not the script of the published item", status=403)
+        return published
+    return Verdict(ok=True)
+
+
 
 
 def origin_allowed(ws: WebSocket) -> bool:
-    return _local_host(_origin_host(ws.headers.get("origin", "")))
+    return allowed_origin(ws.headers.get("origin", ""))
 
 
 def http_origin_allowed(request: Request) -> bool:
@@ -386,12 +718,14 @@ def http_origin_allowed(request: Request) -> bool:
     # the 127.0.0.1 bind already contains those. A *present* cross-origin header
     # from a page we don't serve is the drive-by-RCE risk: reject it.
     origin = request.headers.get("origin")
-    return origin is None or _local_host(_origin_host(origin))
+    return origin is None or allowed_origin(origin)
 
 
 @router.get("/health")
-def health():
-    return {"status": "ok", "sessions": sorted(sessions)}
+def health(request: Request):
+    origin = request.headers.get("origin")
+    locked = bool(origin) and not origin_is_local(origin) and not check_grant(bearer_of(request), origin)
+    return {"status": "ok", "sessions": sorted(sessions), "locked": locked, "trust": bool(trust.sites())}
 
 
 # ── Claude Code conversations ────────────────────────────────────────────────
@@ -474,16 +808,24 @@ class RunRequest(BaseModel):
     host: str | None = None
     timeout: int = 30
     session: str | None = None
+    # Where the item lives and what its home site publishes — required for a
+    # page that is not local; `source` is the whole item text, `text` its script.
+    page: PageRef | None = None
+    source: str | None = None
 
 
 @router.post("/run")
 def run(req: RunRequest, request: Request):
     """Ward's shell-plugin model: run, capture, return structured output."""
-    if not http_origin_allowed(request):
+    verdict = gate(request, req.text, req.page, req.source)
+    if not verdict.ok:
         return JSONResponse(
-            {"stdout": "", "stderr": "forbidden origin", "exit": -1}, status_code=403
+            {"stdout": "", "stderr": verdict.why, "exit": -1, "locked": verdict.locked},
+            status_code=verdict.status,
         )
-    cwd = os.path.expanduser(req.cwd) if req.cwd else None
+    # A verified page names its own working directory only through its script;
+    # a page-supplied cwd is honoured on local pages alone.
+    cwd = os.path.expanduser(req.cwd) if (req.cwd and not must_verify(request, req.page)) else None
     if req.host:
         # A HOST directive ssh's out with the service user's key, to an
         # allowlisted host only. The remote shell reads the script on stdin's -c.
@@ -508,7 +850,10 @@ def run(req: RunRequest, request: Request):
             cmd, capture_output=True, text=True, timeout=req.timeout, cwd=cwd,
             env=interactive_env(),
         )
-        return {"stdout": proc.stdout, "stderr": proc.stderr, "exit": proc.returncode}
+        reply = {"stdout": proc.stdout, "stderr": proc.stderr, "exit": proc.returncode}
+        if verdict.site:
+            reply["verified"] = {"site": verdict.site, "at": verdict.at, "signed_by": verdict.signed_by}
+        return reply
     except subprocess.TimeoutExpired:
         return {"stdout": "", "stderr": f"timed out after {req.timeout}s", "exit": -1}
 
@@ -543,6 +888,8 @@ class Guard(BaseModel):
 class CheckRequest(BaseModel):
     guards: list[Guard]
     timeout: int = 10
+    page: PageRef | None = None
+    source: str | None = None
 
 
 @router.post("/check")
@@ -550,10 +897,23 @@ def check(req: CheckRequest, request: Request):
     """Evaluate workflow guards: a step is unlocked iff its test exits 0.
 
     Used on page load to decide which terminal items to lock. Output is
-    discarded — only the exit status matters.
+    discarded — only the exit status matters. For a page that is not local the
+    guard must be the GUARD line of the published item, verified like a run.
     """
-    if not http_origin_allowed(request):
-        return JSONResponse({"results": {}}, status_code=403)
+    verified = must_verify(request, req.page)
+    # The gate verifies the published SOURCE; the guard is checked against its
+    # GUARD line below, so the text handed to the gate is the source's script.
+    verdict = gate(request, script_of(req.source or ""), req.page, req.source) if verified \
+        else gate(request, "", None)
+    if not verdict.ok:
+        return JSONResponse({"results": {}, "error": verdict.why, "locked": verdict.locked},
+                            status_code=verdict.status)
+    if verified:
+        allowed = guard_of(req.source or "")
+        for g in req.guards:
+            if g.test.strip() != (allowed or "").strip():
+                return JSONResponse({"results": {}, "error": "a guard must be the GUARD line of the published item"},
+                                    status_code=403)
     results: dict[str, bool] = {}
     for g in req.guards:
         try:
@@ -597,6 +957,155 @@ def needs(req: NeedsRequest, request: Request):
     return resolve_needs(req.session, [n.model_dump() for n in req.needs])
 
 
+class VerifyRequest(BaseModel):
+    source: str
+    page: PageRef | None = None
+
+
+@router.post("/verify")
+def verify(req: VerifyRequest, request: Request):
+    """Say whether this item, as sent, is what its home site publishes — so a
+    toolbar can wear the verdict before anyone clicks. Runs nothing."""
+    if not http_origin_allowed(request):
+        return JSONResponse({"ok": False, "why": "forbidden origin"}, status_code=403)
+    if not must_verify(request, req.page):
+        return {"ok": True, "site": None, "local": True}
+    v = verify_publication(req.source, req.page)
+    origin = request.headers.get("origin")
+    locked = bool(origin) and not origin_is_local(origin) and not check_grant(bearer_of(request), origin)
+    return {"ok": v.ok, "why": v.why, "site": v.site, "signed_by": v.signed_by, "at": v.at, "locked": locked}
+
+
+class PasteRequest(BaseModel):
+    session: str
+    text: str
+    page: PageRef | None = None
+    source: str | None = None
+    enter: bool = True
+
+
+@router.post("/paste")
+def paste(req: PasteRequest, request: Request):
+    """Write a verified script into a named live session — the BUTTON of a page
+    that is not local, without handing that page the raw socket."""
+    verdict = gate(request, req.text, req.page, req.source)
+    if not verdict.ok:
+        return JSONResponse({"ok": False, "error": verdict.why, "locked": verdict.locked},
+                            status_code=verdict.status)
+    if not SESSION_NAME.match(req.session):
+        return JSONResponse({"ok": False, "error": "bad session name"}, status_code=400)
+    live = sessions.get(req.session)
+    if live is None:
+        return JSONResponse({"ok": False, "error": "no such live session — open the terminal first"},
+                            status_code=409)
+    live.write(req.text + ("\r" if req.enter else ""))
+    return {"ok": True, "session": req.session, "verified": {"site": verdict.site, "at": verdict.at}}
+
+
+@router.get("/trust")
+def trust_view(request: Request):
+    """What this machine trusts — site names and key holders, never secrets —
+    and whether the asking origin currently holds a grant."""
+    origin = request.headers.get("origin")
+    if origin and not allowed_origin(origin):
+        return JSONResponse({"error": "forbidden origin"}, status_code=403)
+    data = trust.public()
+    data["locked"] = bool(origin) and not origin_is_local(origin) and not check_grant(bearer_of(request), origin)
+    data["unlock"] = "/terminal/unlock"
+    return data
+
+
+def _same_origin(request: Request) -> bool:
+    """Only a page this service served itself may mint or revoke grants: the
+    browser's own Sec-Fetch-Site says so, and the Origin, when present, must be
+    this host. A cross-site page cannot forge either from a browser."""
+    if request.headers.get("sec-fetch-site", "same-origin") != "same-origin":
+        return False
+    origin = request.headers.get("origin")
+    return origin is None or _origin_host(origin) == (request.url.hostname or "")
+
+
+UNLOCK_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><title>terminal — unlock</title>
+<style>body{font:15px/1.5 -apple-system,system-ui,sans-serif;max-width:34em;margin:3em auto;padding:0 1em;color:#222}
+button{font:inherit;padding:.5em 1.2em;margin:.3em .4em .3em 0;border-radius:6px;border:1px solid #888;background:#fff;cursor:pointer}
+button.primary{background:#2a6;color:#fff;border-color:#2a6}code{background:#eee;padding:.1em .3em;border-radius:3px}
+ul{padding-left:1.2em}small{color:#666}</style></head><body>
+<h2>Allow <code>__ORIGIN__</code> to run verified scripts on this Mac?</h2>
+<p>Only scripts that <code>__ORIGIN__</code> itself publishes will run, and only when you click them. The grant lasts <span id="mins">30</span> minutes, for that origin, in the tab that asked. Closing this service, or Lock everything, ends every grant.</p>
+<p><button class="primary" id="unlock">Unlock for <span id="mins2">30</span> min</button>
+<button id="unlock8">Unlock for 8 h</button>
+<button id="lock">Lock everything</button></p>
+<p><small id="status"></small></p>
+<h3>Live grants</h3><ul id="grants"><li><small>none</small></li></ul>
+<script>
+const origin = __ORIGIN_JSON__
+const $ = s => document.querySelector(s)
+const refresh = async () => {
+  const r = await fetch('/terminal/grants'); const j = await r.json()
+  $('#grants').innerHTML = (j.grants||[]).map(g => `<li><code>${g.origin}</code> until ${new Date(g.exp*1000).toLocaleTimeString()}</li>`).join('') || '<li><small>none</small></li>'
+}
+const grant = async ttl => {
+  const r = await fetch('/terminal/unlock/grant', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({origin, ttl})})
+  const j = await r.json()
+  if (!r.ok) { $('#status').textContent = j.error || 'refused'; return }
+  if (window.opener) { window.opener.postMessage({type:'wiki-terminal-unlock', token:j.token, exp:j.exp, origin}, origin) }
+  $('#status').textContent = 'unlocked — you can close this window'
+  await refresh()
+  if (window.opener) setTimeout(() => window.close(), 600)
+}
+$('#unlock').onclick = () => grant(1800)
+$('#unlock8').onclick = () => grant(8*3600)
+$('#lock').onclick = async () => { await fetch('/terminal/lock', {method:'POST'}); $('#status').textContent = 'everything locked'; if (window.opener) window.opener.postMessage({type:'wiki-terminal-lock'}, origin); await refresh() }
+refresh()
+</script></body></html>"""
+
+
+@router.get("/unlock")
+def unlock_page(origin: str = Query("")):
+    """The consent page. Only an origin this service would accept can be asked
+    for — a local origin or the https origin of a trusted site."""
+    origin = origin.strip().rstrip("/")
+    if not allowed_origin(origin):
+        return HTMLResponse("<p>That origin is not local and not a trusted site. Add it to trust.json first.</p>",
+                            status_code=403)
+    html = UNLOCK_HTML.replace("__ORIGIN_JSON__", json.dumps(origin)).replace("__ORIGIN__", origin.replace("<", "&lt;"))
+    return HTMLResponse(html)
+
+
+class GrantRequest(BaseModel):
+    origin: str
+    ttl: int | None = None
+
+
+@router.post("/unlock/grant")
+def unlock_grant(req: GrantRequest, request: Request):
+    if not _same_origin(request):
+        return JSONResponse({"error": "grants are minted only from the unlock page"}, status_code=403)
+    origin = req.origin.strip().rstrip("/")
+    if not allowed_origin(origin):
+        return JSONResponse({"error": "origin is not local and not a trusted site"}, status_code=403)
+    token, exp = mint_grant(origin, req.ttl)
+    print(f"terminal unlock: {origin} until {datetime.fromtimestamp(exp).isoformat(timespec='minutes')}")
+    return {"token": token, "exp": exp, "origin": origin}
+
+
+@router.get("/grants")
+def grants(request: Request):
+    if not _same_origin(request):
+        return JSONResponse({"error": "same-origin only"}, status_code=403)
+    return {"grants": live_grants()}
+
+
+@router.post("/lock")
+def lock(request: Request):
+    if not _same_origin(request):
+        return JSONResponse({"error": "same-origin only"}, status_code=403)
+    lock_all()
+    print("terminal lock: every grant revoked")
+    return {"ok": True}
+
+
 @router.websocket("/pty/{session}")
 async def attach(ws: WebSocket, session: str, host: str | None = Query(None)):
     target = resolve_ssh_target(host) if host else None
@@ -608,6 +1117,18 @@ async def attach(ws: WebSocket, session: str, host: str | None = Query(None)):
         await ws.close(code=4403)
         return
     await ws.accept()
+    origin = ws.headers.get("origin", "")
+    if not origin_is_local(origin):
+        # A public page reaches the pty only with the person's grant, sent as
+        # the first frame — websockets carry no Authorization header.
+        try:
+            first = json.loads(await asyncio.wait_for(ws.receive_text(), timeout=5))
+        except (asyncio.TimeoutError, ValueError, WebSocketDisconnect):
+            await ws.close(code=4401)
+            return
+        if first.get("type") != "auth" or not check_grant(first.get("token"), origin):
+            await ws.close(code=4401)
+            return
     live = sessions.get(session)
     if live is None:
         live = sessions[session] = Session(session, target)
@@ -669,10 +1190,27 @@ app = FastAPI()
 # degrades to display-only. Restrict CORS to local origins (localhost /
 # *.localhost / loopback) so a public page can't drive the pty cross-origin —
 # the loopback bind plus the per-request Origin checks are the real backstop.
+def _cors_regex() -> str:
+    local = r"https?://(([a-z0-9-]+\.)*localhost|127\.0\.0\.1|\[::1\])(:\d+)?"
+    trusted = "|".join("https://" + re.escape(x) for x in sorted(trust.sites()))
+    return f"^({local}{'|' + trusted if trusted else ''})$"
+
+
+async def private_network_headers(request, call_next):
+    """Chrome's Private/Local Network Access asks a loopback service, on the
+    preflight, whether a public page may talk to it. Answer yes: the real
+    gates are the Origin check, the grant and the page verification."""
+    response = await call_next(request)
+    if request.headers.get("access-control-request-private-network") == "true":
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https?://(([a-z0-9-]+\.)*localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
+    allow_origin_regex=_cors_regex(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.middleware("http")(private_network_headers)
 app.include_router(router)

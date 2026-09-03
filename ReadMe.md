@@ -56,18 +56,37 @@ succession declarations from plugins into `/system/factories.json`.
 ## Security
 
 The pty service is remote code execution by design. It binds to
-`127.0.0.1`, checks websocket `Origin` against local wiki hosts
-(`localhost`, `*.localhost`), and is simply absent on public servers,
-where the plugin renders display-only.
+`127.0.0.1`; Caddy proxies `terminal.localhost` to it from loopback only,
+and it is simply absent on public servers, where the plugin renders
+display-only. Two trusts decide whether a script runs, and they are kept
+apart.
 
-The live toolbar activates in two local contexts: when the wiki's own
-origin is local, or when the page is served by the **local mirror farm**
-(the `wiki-security-author` client sets `window.isLocalMirror`, which is
-never present on a real live site). In the mirror case the page carries
-a real public domain name, so the service base follows the page protocol
-— `https://terminal.localhost` / `wss://` on an https mirror page — to
-avoid mixed-content blocking. The health probe remains the real backstop:
-no service, no toolbar.
+**Page trust — whose text may run.** A page of a local site (`localhost`,
+`*.localhost`, or the local mirror farm, where the `wiki-security-author`
+client sets `window.isLocalMirror`) runs as before. A page from any other
+site runs only if that site is listed in
+`~/.config/wiki-plugin-terminal/trust.json` (`{"sites": ["plan.ide.earth"]}`,
+mode 600, reloaded on change) AND the service, fetching the page from that
+site itself, finds the item text byte-equal to what the browser sent.
+Publication is the signature: only the site's owner can publish there. A
+trusted page's toolbar wears `verified · <site>`; a stale or edited copy is
+refused. Directives travel with the text, so a page cannot strip or alter a
+`GUARD`, and `service:` is honoured on local pages only.
+
+**Keyboard trust — the person consents.** A request from a non-local
+origin (the public page itself, opened in a browser on this machine) also
+needs a grant: the person clicks **unlock**, a popup on `terminal.localhost`
+asks whether that origin may run verified scripts for 30 minutes, and hands
+the page an origin-bound HMAC token by `postMessage`. The token lives in
+that tab's `sessionStorage`, is sent as a bearer and as the first websocket
+frame, and dies with the service (the secret is minted at start). Never a
+cookie. Nothing runs on view: a `GUARD` on a non-local page is a button, not
+a poll.
+
+The health probe remains the backstop — no service, no toolbar — and the
+browser adds its own consent when a public https page first reaches a
+loopback address (Chrome's Local Network Access prompt). The Terminal
+Trust Plan on the private security wiki records the audit this answers.
 
 ## License
 

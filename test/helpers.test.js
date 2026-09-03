@@ -417,3 +417,32 @@ test('needWarnings catches a secret referenced without its $', () => {
   // correctly written, no warning
   assert.deepEqual(needWarnings(needs, 'curl --netrc-file "$AUTH" x'), [])
 })
+
+// ── Terminal Trust Plan: page provenance and a service-held trust list ──────
+import { pageRef, serviceOrigin } from '../src/client/helpers.js'
+
+test('serviceBase honours item.service only on a local page (audit 4.1)', () => {
+  const item = { service: 'https://attacker.example/svc/' }
+  assert.equal(serviceBase(item, 'http:', true), 'https://attacker.example/svc')
+  assert.equal(serviceBase(item, 'http:', false), 'http://terminal.localhost')
+  assert.equal(serviceBase({}, 'https:', false), 'https://terminal.localhost')
+})
+
+test('pageRef carries site, slug without a revision suffix, and the item id', () => {
+  assert.deepEqual(pageRef('Plan.IDE.earth', 'farm-key-demo_rev12', 'a1b2'),
+    { site: 'plan.ide.earth', slug: 'farm-key-demo', itemId: 'a1b2' })
+  assert.deepEqual(pageRef(undefined, undefined, undefined), { site: '', slug: '', itemId: '' })
+})
+
+test('serviceOrigin reduces a base to its origin', () => {
+  assert.equal(serviceOrigin('https://terminal.localhost/'), 'https://terminal.localhost')
+  assert.equal(serviceOrigin('http://127.0.0.1:4244/x'), 'http://127.0.0.1:4244')
+})
+
+test('originTrust reads the service list: trusted, local, inert', () => {
+  const sites = ['plan.ide.earth']
+  assert.equal(originTrust('plan.ide.earth', false, sites), 'trusted')
+  assert.equal(originTrust('plan.localhost', false, sites), 'local')
+  assert.equal(originTrust('other.example', false, sites), 'inert')
+  assert.equal(originTrust('other.example', false, undefined), 'inert')
+})

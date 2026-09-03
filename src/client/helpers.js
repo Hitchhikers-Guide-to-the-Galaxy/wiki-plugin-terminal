@@ -17,11 +17,28 @@ export const sessionName = (item, override) =>
 // service — the browser blocks that as mixed content. Caddy answers
 // terminal.localhost on both http and https, so mirroring the page protocol
 // works either way. An explicit item.service (full URL) always wins.
-export const serviceBase = (item, protocol = 'http:') => {
-  if (item.service) return item.service.replace(/\/$/, '')
+export const serviceBase = (item, protocol = 'http:', isLocalPage = true) => {
+  // A page-controlled service URL is honoured only on the viewer's own page:
+  // a forked public page could otherwise repoint run, needs and the pty at a
+  // stranger's host (Terminal Plugin Audit, finding 4.1).
+  if (item.service && isLocalPage) return item.service.replace(/\/$/, '')
   const scheme = protocol === 'https:' ? 'https' : 'http'
   return `${scheme}://terminal.localhost`
 }
+
+// The service's own origin, for postMessage checks and the trust fetch.
+export const serviceOrigin = base => {
+  try { return new URL(base).origin } catch { return base }
+}
+
+// Where a page lives, as the lineup carries it: a remote page's home site sits
+// on the enclosing .page as data('site'); a page of the site being viewed has
+// none, so the view host stands in. Pure given the two strings and the id.
+export const pageRef = (site, slug, itemId) => ({
+  site: String(site || '').toLowerCase(),
+  slug: String(slug || '').replace(/_rev\d+$/, ''),
+  itemId: String(itemId || ''),
+})
 
 // The live terminal is local-first only. Anywhere else — a public server —
 // the plugin must behave exactly like the code plugin: display the script and
@@ -46,7 +63,10 @@ export const isLocalContext = (hostname, isMirror) =>
 // carries each lineup page's home site; a page from a *remote* site the viewer
 // trusts may be OFFERED to run on the viewer's own local pty (never auto-run).
 // trustedAuthors is a plain list (or Set) of origin-site hostnames — e.g.
-// ['bot.pi5'] — set by the security client (window.trustedAuthors). Pure.
+// ['plan.ide.earth'] — read from the service (GET /terminal/trust, which
+// reads ~/.config/wiki-plugin-terminal/trust.json). It used to be a browser
+// localStorage list set by window.trustAuthor; a co-resident script could set
+// that, so trust moved off the browser (Terminal Plugin Audit, 2.2). Pure.
 export const isTrustedAuthor = (originSite, trustedAuthors) => {
   if (!originSite) return false
   const list = trustedAuthors instanceof Set ? [...trustedAuthors]
