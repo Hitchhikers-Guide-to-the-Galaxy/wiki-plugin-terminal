@@ -256,6 +256,33 @@ def scrub_launcher_env() -> dict:
     return {k: v for k, v in os.environ.items() if not k.startswith(_LAUNCHER_ENV)}
 
 
+# A one-shot run is `zsh -c`, which reads no rc file, so its PATH is whatever
+# this service was launched with — and a service started by launchd or an IDE
+# has never seen ~/.zshrc, where the user's own directories join the PATH.
+# The live pane is an interactive zsh and has them, so the same command line
+# worked there and failed on the RUN button ("command not found: wiki-plugman",
+# 3 September 2026). Ask an interactive zsh once what PATH it would have and
+# give every run that; it is cached, because starting one costs about a second.
+_interactive_path: str | None = None
+
+
+def interactive_env() -> dict:
+    global _interactive_path
+    env = scrub_launcher_env()
+    if _interactive_path is None:
+        try:
+            out = subprocess.run(
+                ["zsh", "-ic", "print -r -- $PATH"],
+                capture_output=True, text=True, timeout=15, env=env,
+            ).stdout.strip().splitlines()
+            _interactive_path = out[-1].strip() if out else ""
+        except (OSError, subprocess.SubprocessError):
+            _interactive_path = ""
+    if _interactive_path:
+        env["PATH"] = _interactive_path
+    return env
+
+
 class Session:
     """One forked zsh on a pty; many websocket clients may attach."""
 
@@ -479,7 +506,7 @@ def run(req: RunRequest, request: Request):
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=req.timeout, cwd=cwd,
-            env=scrub_launcher_env(),
+            env=interactive_env(),
         )
         return {"stdout": proc.stdout, "stderr": proc.stderr, "exit": proc.returncode}
     except subprocess.TimeoutExpired:
@@ -533,6 +560,7 @@ def check(req: CheckRequest, request: Request):
             proc = subprocess.run(
                 ["zsh", "-c", g.test],
                 capture_output=True, timeout=req.timeout,
+                env=interactive_env(),
             )
             results[g.id] = proc.returncode == 0
         except subprocess.TimeoutExpired:
