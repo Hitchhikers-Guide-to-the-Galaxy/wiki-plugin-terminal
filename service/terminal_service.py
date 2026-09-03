@@ -40,6 +40,11 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
+try:
+    import bip340
+except ImportError:  # the service copy travels with bip340.py beside it
+    bip340 = None
+
 import pty as pty_module
 
 from fastapi import APIRouter, FastAPI, Query, Request, WebSocket, WebSocketDisconnect
@@ -562,6 +567,75 @@ def verify_publication(text: str, ref: PageRef | None) -> Verdict:
     return Verdict(ok=False, why=f"{site}/{slug} has no item {item_id}")
 
 
+# ── Signed items: trust that follows the author ─────────────────────────────
+#
+# A site vouches for what it publishes; a signature vouches for who wrote it.
+# The author signs the item TEXT — directives included, since they carry
+# authority — as a nostr event, so any nostr tool can check it, and the
+# signature travels with the item through every fork. A key listed in
+# trust.json's `keys` passes offline, on any site, with no page fetch:
+#
+#   "keys": { "npub1…": { "id": "david" } }
+#
+# The event is NIP-01: [0, pubkey, created_at, kind, tags, content], kind
+# 30078 (application-specific data), tags [["d","fedwiki-item"],["type",<item
+# type>]]. Serialised the JSON.stringify way — no spaces, raw unicode — and
+# sha256'd; that digest is what BIP-340 signs. test/fixtures/sign-vectors.json
+# holds texts that JavaScript and Python must serialise byte-identically.
+SIGN_KIND = 30078
+SIGN_TAG = "fedwiki-item"
+
+
+def canonical_event(pubkey_hex: str, created_at: int, item_type: str, text: str) -> str:
+    event = [0, pubkey_hex, int(created_at), SIGN_KIND, [["d", SIGN_TAG], ["type", item_type]], text]
+    return json.dumps(event, separators=(",", ":"), ensure_ascii=False)
+
+
+def event_id(pubkey_hex: str, created_at: int, item_type: str, text: str) -> bytes:
+    return hashlib.sha256(canonical_event(pubkey_hex, created_at, item_type, text).encode("utf-8")).digest()
+
+
+class Signature(BaseModel):
+    alg: str = "bip340"
+    pubkey: str
+    created_at: int
+    sig: str
+
+
+def trusted_keys() -> dict[str, str]:
+    """pubkey hex → holder id, from trust.json's keys (npub or hex accepted)."""
+    out = {}
+    for key, holder in trust.keys().items():
+        pub = bip340.pubkey_from(str(key)) if bip340 else None
+        if pub:
+            out[pub.hex()] = (holder.get("id") if isinstance(holder, dict) else None) or "unnamed"
+    return out
+
+
+def verify_signature(source: str, signature: Signature | None, item_type: str = "terminal") -> Verdict:
+    """Is this text signed by a key this machine trusts? Offline, no fetch."""
+    if signature is None:
+        return Verdict(ok=False, why="unsigned")
+    if bip340 is None:
+        return Verdict(ok=False, why="bip340 module not deployed beside the service")
+    if signature.alg != "bip340":
+        return Verdict(ok=False, why=f"unknown signature algorithm {signature.alg}")
+    pub = bip340.pubkey_from(signature.pubkey)
+    try:
+        sig = bytes.fromhex(signature.sig)
+    except ValueError:
+        sig = b""
+    if pub is None or len(sig) != 64:
+        return Verdict(ok=False, why="malformed signature")
+    holder = trusted_keys().get(pub.hex())
+    if holder is None:
+        return Verdict(ok=False, why=f"signed by a key this machine does not trust ({bip340.npub(pub)[:16]}…)")
+    if not bip340.verify(event_id(pub.hex(), signature.created_at, item_type, source), pub, sig):
+        return Verdict(ok=False, why=f"signature stale — the text changed since {holder} signed it")
+    return Verdict(ok=True, signed_by=holder, site=None,
+                   at=datetime.fromtimestamp(signature.created_at, timezone.utc).isoformat(timespec="seconds"))
+
+
 def page_is_local(ref: PageRef | None) -> bool:
     return ref is not None and _local_host(ref.site.lower())
 
@@ -682,7 +756,8 @@ def origin_is_local(origin: str | None) -> bool:
     return bool(origin) and _local_host(_origin_host(origin))
 
 
-def gate(request: Request, text: str, ref: PageRef | None, source: str | None = None) -> Verdict:
+def gate(request: Request, text: str, ref: PageRef | None, source: str | None = None,
+         signature: Signature | None = None) -> Verdict:
     """The whole decision for a run, a check or a paste.
 
     1. Origin: local, or the https origin of a trusted site.
@@ -697,13 +772,25 @@ def gate(request: Request, text: str, ref: PageRef | None, source: str | None = 
         if not check_grant(bearer_of(request), origin):
             return Verdict(ok=False, why=f"locked: {origin} has no live grant on this machine — click Unlock",
                            status=401, locked=True)
-    if must_verify(request, ref):
-        published = verify_publication(source if source is not None else text, ref)
-        if not published.ok:
-            return published
+    if must_verify(request, ref) or signature is not None:
+        body = source if source is not None else text
+        # A signature by a trusted key settles page trust on its own, on any
+        # site, offline. Otherwise the page's home site must publish the text.
+        signed = verify_signature(body, signature)
+        if signed.ok:
+            trusted = signed
+        elif must_verify(request, ref):
+            published = verify_publication(body, ref)
+            if not published.ok:
+                if signature is not None:
+                    published.why = f"{signed.why}; {published.why}"
+                return published
+            trusted = published
+        else:
+            return Verdict(ok=True)
         if source is not None and text != script_of(source):
             return Verdict(ok=False, why="the text to run is not the script of the published item", status=403)
-        return published
+        return trusted
     return Verdict(ok=True)
 
 
@@ -812,12 +899,13 @@ class RunRequest(BaseModel):
     # page that is not local; `source` is the whole item text, `text` its script.
     page: PageRef | None = None
     source: str | None = None
+    signature: Signature | None = None
 
 
 @router.post("/run")
 def run(req: RunRequest, request: Request):
     """Ward's shell-plugin model: run, capture, return structured output."""
-    verdict = gate(request, req.text, req.page, req.source)
+    verdict = gate(request, req.text, req.page, req.source, req.signature)
     if not verdict.ok:
         return JSONResponse(
             {"stdout": "", "stderr": verdict.why, "exit": -1, "locked": verdict.locked},
@@ -851,7 +939,7 @@ def run(req: RunRequest, request: Request):
             env=interactive_env(),
         )
         reply = {"stdout": proc.stdout, "stderr": proc.stderr, "exit": proc.returncode}
-        if verdict.site:
+        if verdict.site or verdict.signed_by:
             reply["verified"] = {"site": verdict.site, "at": verdict.at, "signed_by": verdict.signed_by}
         return reply
     except subprocess.TimeoutExpired:
@@ -890,6 +978,7 @@ class CheckRequest(BaseModel):
     timeout: int = 10
     page: PageRef | None = None
     source: str | None = None
+    signature: Signature | None = None
 
 
 @router.post("/check")
@@ -903,7 +992,8 @@ def check(req: CheckRequest, request: Request):
     verified = must_verify(request, req.page)
     # The gate verifies the published SOURCE; the guard is checked against its
     # GUARD line below, so the text handed to the gate is the source's script.
-    verdict = gate(request, script_of(req.source or ""), req.page, req.source) if verified \
+    verified = verified or req.signature is not None
+    verdict = gate(request, script_of(req.source or ""), req.page, req.source, req.signature) if verified \
         else gate(request, "", None)
     if not verdict.ok:
         return JSONResponse({"results": {}, "error": verdict.why, "locked": verdict.locked},
@@ -960,6 +1050,7 @@ def needs(req: NeedsRequest, request: Request):
 class VerifyRequest(BaseModel):
     source: str
     page: PageRef | None = None
+    signature: Signature | None = None
 
 
 @router.post("/verify")
@@ -968,12 +1059,19 @@ def verify(req: VerifyRequest, request: Request):
     toolbar can wear the verdict before anyone clicks. Runs nothing."""
     if not http_origin_allowed(request):
         return JSONResponse({"ok": False, "why": "forbidden origin"}, status_code=403)
+    signed = verify_signature(req.source, req.signature) if req.signature is not None else None
     if not must_verify(request, req.page):
-        return {"ok": True, "site": None, "local": True}
-    v = verify_publication(req.source, req.page)
+        return {"ok": True, "site": None, "local": True,
+                "signed_by": signed.signed_by if signed and signed.ok else None,
+                "signature": None if signed is None else ("ok" if signed.ok else signed.why)}
     origin = request.headers.get("origin")
     locked = bool(origin) and not origin_is_local(origin) and not check_grant(bearer_of(request), origin)
-    return {"ok": v.ok, "why": v.why, "site": v.site, "signed_by": v.signed_by, "at": v.at, "locked": locked}
+    if signed and signed.ok:
+        return {"ok": True, "why": "", "site": None, "signed_by": signed.signed_by, "at": signed.at,
+                "signature": "ok", "locked": locked}
+    v = verify_publication(req.source, req.page)
+    return {"ok": v.ok, "why": v.why, "site": v.site, "signed_by": None, "at": v.at, "locked": locked,
+            "signature": None if signed is None else signed.why}
 
 
 class PasteRequest(BaseModel):
@@ -981,6 +1079,7 @@ class PasteRequest(BaseModel):
     text: str
     page: PageRef | None = None
     source: str | None = None
+    signature: Signature | None = None
     enter: bool = True
 
 
@@ -988,7 +1087,7 @@ class PasteRequest(BaseModel):
 def paste(req: PasteRequest, request: Request):
     """Write a verified script into a named live session — the BUTTON of a page
     that is not local, without handing that page the raw socket."""
-    verdict = gate(request, req.text, req.page, req.source)
+    verdict = gate(request, req.text, req.page, req.source, req.signature)
     if not verdict.ok:
         return JSONResponse({"ok": False, "error": verdict.why, "locked": verdict.locked},
                             status_code=verdict.status)

@@ -23,6 +23,7 @@ print(m.group(1) if m else "")
 PY
 )
 cp "$SRC" "$DST"
+cp "$HERE/service/bip340.py" "$API_DIR/bip340.py"   # the signature verifier travels with the service
 if [ -n "$LOCAL_HOSTS" ]; then
   python3 - "$DST" "$LOCAL_HOSTS" <<'PY'
 import re, sys

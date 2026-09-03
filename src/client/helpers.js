@@ -585,3 +585,15 @@ export const STYLE = `
 // Stylesheets to load: only the plugin's own bundle (xterm.css — without it
 // the hidden helper textarea renders as a visible box). Script and captured
 // output styling is fully self-contained in STYLE above.
+
+
+// ── Signed items ─────────────────────────────────────────────────────────────
+//
+// The author signs an item's text as a nostr event (NIP-01 serialisation,
+// kind 30078, tags d=fedwiki-item and type=<item type>). The service verifies;
+// the browser only needs the same canonical bytes for the shared fixture
+// test/fixtures/sign-vectors.json, which JavaScript and Python must agree on.
+export const SIGN_KIND = 30078
+export const SIGN_TAG = 'fedwiki-item'
+export const canonicalEvent = (pubkeyHex, createdAt, itemType, text) =>
+  JSON.stringify([0, pubkeyHex, Number(createdAt), SIGN_KIND, [['d', SIGN_TAG], ['type', itemType]], text])

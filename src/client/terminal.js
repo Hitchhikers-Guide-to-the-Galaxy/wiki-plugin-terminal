@@ -280,7 +280,7 @@ const renderReply = ($item, { stdout, stderr, exit, verified }) => {
   $item.find('.terminal-reply').html(`
     ${stderr ? `<pre class="stderr hljs"><code class="hljs">${expand(stderr)}</code></pre>` : ''}
     <pre class="hljs"><code class="hljs">${expand(stdout || '')}</code></pre>
-    <span class="exit">exit ${expand(exit)}${verified && verified.site ? ` · verified · ${expand(verified.site)}` : ''}</span>
+    <span class="exit">exit ${expand(exit)}${verified && verified.signed_by ? ` · signed by ${expand(verified.signed_by)}` : verified && verified.site ? ` · verified · ${expand(verified.site)}` : ''}</span>
   `)
 }
 
@@ -294,6 +294,7 @@ const run = async ($item, script, base, host, session, ctx, item) => {
     // A page that is not local says where it lives and what it publishes; the
     // service checks that against the site itself before anything runs.
     if (ctx && (!ctx.isLocalPage || !ctx.isLocalOrigin)) { body.page = ctx.ref; body.source = item ? item.text : undefined }
+    if (item && item.signature) { body.signature = item.signature; body.source = item.text }
     const res = await post(base, '/terminal/run', body, ctx)
     renderReply($item, await res.json())
   } catch (err) {
@@ -547,14 +548,17 @@ const bind = async ($item, item) => {
     `)
     const $verify = $tools.find('.t-verify')
     const showVerdict = v => {
-      if (v.ok) $verify.text(`verified · ${v.site || ctx.site}${v.locked ? ' · locked' : ''}`).attr('title', v.at || '')
-      else $verify.text('not verified').attr('title', v.why || '')
+      // Signed by a trusted key beats the site: it holds on any site, offline.
+      const who = v.signed_by ? `signed by ${v.signed_by}` : `verified · ${v.site || ctx.site}`
+      const stale = !v.signed_by && item.signature && v.signature && v.signature !== 'ok' ? ' · signature stale' : ''
+      if (v.ok) $verify.text(`${who}${stale}${v.locked ? ' · locked' : ''}`).attr('title', (v.at || '') + (stale ? ` — ${v.signature}` : ''))
+      else $verify.text(`not verified${stale}`).attr('title', v.why || '')
       $tools.find('.t-run-remote, .t-check').prop('disabled', !v.ok)
       $tools.find('.t-unlock').toggle(Boolean(v.locked))
     }
     const verify = async () => {
       try {
-        const res = await post(base, '/terminal/verify', { source: item.text, page: ctx.ref })
+        const res = await post(base, '/terminal/verify', { source: item.text, page: ctx.ref, signature: item.signature || undefined })
         showVerdict(await res.json())
       } catch (err) { showVerdict({ ok: false, why: String(err) }) }
     }
@@ -564,7 +568,7 @@ const bind = async ($item, item) => {
     $tools.find('.t-check').on('click', async () => {
       try {
         const res = await post(base, '/terminal/check',
-          { guards: [{ id: item.id, test: opts.guard }], page: ctx.ref, source: item.text, timeout: 20 }, ctx)
+          { guards: [{ id: item.id, test: opts.guard }], page: ctx.ref, source: item.text, signature: item.signature || undefined, timeout: 20 }, ctx)
         const j = await res.json()
         const ok = j.results && j.results[item.id]
         $item.find('.terminal-reply').html(`<span class="exit">${ok ? 'guard passes' : `guard fails${j.error ? ` — ${expand(j.error)}` : ''}`}</span>`)
@@ -579,7 +583,7 @@ const bind = async ($item, item) => {
         $go.prop('disabled', true)
         try {
           const res = await post(base, '/terminal/paste',
-            { session: sessionName(item, opts.session), text: script, page: ctx.ref, source: item.text }, ctx)
+            { session: sessionName(item, opts.session), text: script, page: ctx.ref, source: item.text, signature: item.signature || undefined }, ctx)
           const j = await res.json()
           $go.text(j.ok ? 'sent ✓' : (j.error || 'refused')).toggleClass('t-go-sent', Boolean(j.ok))
         } catch (err) { $go.text(String(err)) }
@@ -587,6 +591,16 @@ const bind = async ($item, item) => {
       })
     }
     return
+  }
+
+  // A signed item wears its mark on a local page as well — the same /verify
+  // call, no gate involved: a mark, not a ceremony.
+  if (item.signature) {
+    post(base, '/terminal/verify', { source: item.text, page: ctx.ref, signature: item.signature })
+      .then(r => r.json()).then(v => {
+        const mark = v.signed_by ? `signed by ${v.signed_by}` : `signature ${v.signature || 'unknown'}`
+        $item.find('.terminal-tools').prepend(`<span class="t-verify" title="${expand(v.at || v.signature || '')}">${expand(mark)}</span>`)
+      }).catch(() => {})
   }
 
   // trust === 'local' — the viewer's own page: the full live toolbar, as before.

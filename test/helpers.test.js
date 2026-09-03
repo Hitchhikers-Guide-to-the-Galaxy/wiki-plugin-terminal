@@ -446,3 +446,19 @@ test('originTrust reads the service list: trusted, local, inert', () => {
   assert.equal(originTrust('other.example', false, sites), 'inert')
   assert.equal(originTrust('other.example', false, undefined), 'inert')
 })
+
+// ── Signed items: JavaScript and Python must serialise the event identically ─
+import { canonicalEvent } from '../src/client/helpers.js'
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+
+test('canonicalEvent hashes match the Python-made fixture byte for byte', () => {
+  const vectors = JSON.parse(readFileSync(new URL('./fixtures/sign-vectors.json', import.meta.url), 'utf8'))
+  assert.ok(vectors.length >= 6)
+  for (const v of vectors) {
+    const canon = canonicalEvent(v.pubkey, v.created_at, v.type, v.text)
+    assert.equal(canon, v.canonical, `canonical form: ${v.name}`)
+    const id = createHash('sha256').update(canon, 'utf8').digest('hex')
+    assert.equal(id, v.event_id, `event id: ${v.name}`)
+  }
+})

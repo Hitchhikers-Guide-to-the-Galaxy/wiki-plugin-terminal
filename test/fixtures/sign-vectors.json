@@ -1,0 +1,74 @@
+[
+ {
+  "name": "plain",
+  "pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+  "created_at": 1758000000,
+  "type": "terminal",
+  "text": "RUN\necho hi",
+  "canonical": "[0,\"3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d\",1758000000,30078,[[\"d\",\"fedwiki-item\"],[\"type\",\"terminal\"]],\"RUN\\necho hi\"]",
+  "event_id": "c0827878ce073282bfb920a90ce5790fef6089ce0d590197cfef5008bd035e5a"
+ },
+ {
+  "name": "quotes and backslashes",
+  "pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+  "created_at": 1758000000,
+  "type": "terminal",
+  "text": "echo \"a\\b\" 'c'",
+  "canonical": "[0,\"3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d\",1758000000,30078,[[\"d\",\"fedwiki-item\"],[\"type\",\"terminal\"]],\"echo \\\"a\\\\b\\\" 'c'\"]",
+  "event_id": "d51d18c25c046f472408767249fe809f1e5d52571ef9c9b928e184803454cd11"
+ },
+ {
+  "name": "tabs and crlf",
+  "pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+  "created_at": 1758000000,
+  "type": "terminal",
+  "text": "GUARD: test -f x\r\n\techo\tdone",
+  "canonical": "[0,\"3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d\",1758000000,30078,[[\"d\",\"fedwiki-item\"],[\"type\",\"terminal\"]],\"GUARD: test -f x\\r\\n\\techo\\tdone\"]",
+  "event_id": "312baee9623bee80eb23ea6115d5ac9f81602d5f072bd7f0544fb211d340eccf"
+ },
+ {
+  "name": "unicode",
+  "pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+  "created_at": 1758000000,
+  "type": "terminal",
+  "text": "echo café → 🌍 ∑ 日本",
+  "canonical": "[0,\"3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d\",1758000000,30078,[[\"d\",\"fedwiki-item\"],[\"type\",\"terminal\"]],\"echo café → 🌍 ∑ 日本\"]",
+  "event_id": "18c03afe5cbd7ef48772177c506ea0f70b0f3ac669e018f4c701c117c5c8870c"
+ },
+ {
+  "name": "control chars",
+  "pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+  "created_at": 1758000000,
+  "type": "terminal",
+  "text": "printf '\u0001\u001f'",
+  "canonical": "[0,\"3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d\",1758000000,30078,[[\"d\",\"fedwiki-item\"],[\"type\",\"terminal\"]],\"printf '\\u0001\\u001f'\"]",
+  "event_id": "6add81ce4306874d71ffebbae4dfd64c62c840c1dfe7b660ed124427bbeef0c9"
+ },
+ {
+  "name": "line and paragraph separators",
+  "pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+  "created_at": 1758000000,
+  "type": "terminal",
+  "text": "echo     end",
+  "canonical": "[0,\"3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d\",1758000000,30078,[[\"d\",\"fedwiki-item\"],[\"type\",\"terminal\"]],\"echo     end\"]",
+  "event_id": "a1a3fc1dd9387d6565db1feb53dc6e54e6e7937842537897f13554e8f57f14e8"
+ },
+ {
+  "name": "empty",
+  "pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+  "created_at": 1758000000,
+  "type": "terminal",
+  "text": "",
+  "canonical": "[0,\"3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d\",1758000000,30078,[[\"d\",\"fedwiki-item\"],[\"type\",\"terminal\"]],\"\"]",
+  "event_id": "88a49694dbc178a2ef57f3d6578aecd28fb33ee1bddf9e83d7a6bf9700a40882"
+ },
+ {
+  "name": "slash and angle",
+  "pubkey": "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
+  "created_at": 1758000000,
+  "type": "terminal",
+  "text": "curl -s https://a/b?c=<d>&e=f",
+  "canonical": "[0,\"3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d\",1758000000,30078,[[\"d\",\"fedwiki-item\"],[\"type\",\"terminal\"]],\"curl -s https://a/b?c=<d>&e=f\"]",
+  "event_id": "c5d989130b3743ae04ffc56e26c3ae77aa238174e6a585316ea856d14ac46aaa"
+ }
+]
