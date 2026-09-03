@@ -83,6 +83,18 @@ frame, and dies with the service (the secret is minted at start). Never a
 cookie. Nothing runs on view: a `GUARD` on a non-local page is a button, not
 a poll.
 
+**Signed items — trust that follows the author.** Since 0.9.0 an item may
+carry a `signature` (`{alg: "bip340", pubkey, created_at, sig}`): the item's
+text, directives included, signed as a nostr event (NIP-01, kind 30078, tags
+`d=fedwiki-item` and `type=terminal`) with a BIP-340 key shown as an npub. A
+key listed under `keys` in `trust.json` (`{"npub1…": {"id": "david"}}`)
+passes offline on any site, with no page fetch, and the toolbar reads
+`signed by david`; an edited text reads `signature stale`. The signer is a
+person: `wiki-sign-item keygen --trust` makes a key into the login Keychain,
+`wiki-sign-item sign <site> <slug>` signs a page's terminal items,
+`wiki-sign-item verify` checks them. `service/bip340.py` is the verifier,
+pure Python, proven against the official vectors.
+
 The health probe remains the backstop — no service, no toolbar — and the
 browser adds its own consent when a public https page first reaches a
 loopback address (Chrome's Local Network Access prompt). The Terminal
