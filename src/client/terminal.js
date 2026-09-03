@@ -156,7 +156,11 @@ const post = async (base, path, body, ctx) => {
   })
   let res = await send()
   if (res.status === 401 && ctx && !ctx.isLocalOrigin) {
-    if (await unlock(base)) res = await send()
+    if (await unlock(base)) {
+      res = await send()
+      // Every toolbar on the page wears the lock state: tell them it lifted.
+      window.dispatchEvent(new CustomEvent('wiki-terminal-unlocked', { detail: { base } }))
+    }
   }
   return res
 }
@@ -568,6 +572,7 @@ const bind = async ($item, item) => {
       } catch (err) { showVerdict({ ok: false, why: String(err) }) }
     }
     verify()
+    window.addEventListener('wiki-terminal-unlocked', () => { if (document.contains($tools.get(0))) verify() })
     $tools.find('.t-run-remote').on('click', () => run($item, script, base, opts.host, null, ctx, item))
     $tools.find('.t-unlock').on('click', async () => { await unlock(base); verify() })
     $tools.find('.t-check').on('click', async () => {
