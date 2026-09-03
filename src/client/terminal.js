@@ -169,7 +169,8 @@ const emit = ($item, item) => {
   // viewer is merely browsing, declared names stay plain text. Computed here
   // (not in bind) because emit renders the script pane.
   const originSite = $item.parents('.page').data('site') || window.location.hostname
-  const trust = originTrust(originSite, window.isLocalMirror, window.wikiTerminalTrustSites)
+  const trust = item.signature && originTrust(originSite, window.isLocalMirror, window.wikiTerminalTrustSites) === 'inert'
+    ? 'trusted' : originTrust(originSite, window.isLocalMirror, window.wikiTerminalTrustSites)
   // BUTTON mode renders as a button on the viewer's own page and on a trusted
   // page (where the click goes through the service's verified paste).
   const buttonMode = opts.button && trust !== 'inert'
@@ -510,7 +511,11 @@ const bind = async ($item, item) => {
     base = other
   }
   const trusted = await trustList(base)
-  const trust = originTrust(ctx.site, window.isLocalMirror, trusted.sites)
+  let trust = originTrust(ctx.site, window.isLocalMirror, trusted.sites)
+  // A signed item on a site nobody vouches for is still the author's word:
+  // let the service judge the signature rather than going inert here. If the
+  // key is not trusted the toolbar says so and offers nothing.
+  if (trust === 'inert' && item.signature) trust = 'trusted'
   if (trust === 'inert') return
 
   // Guard against fedwiki binding the *same* rendered item twice (the async
