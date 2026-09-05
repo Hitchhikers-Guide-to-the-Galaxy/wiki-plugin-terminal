@@ -551,7 +551,7 @@ const bind = async ($item, item) => {
     // right. Everything starts hidden but the verdict; the service's answer
     // decides what appears. Locked means nothing runs, so the run and check
     // buttons are absent — the padlock is the one thing to click.
-    const $tools = $item.find('.terminal-tools').addClass('t-trust')
+    const $tools = $item.find('.terminal-tools').addClass('t-bar t-trust')
     const site = expand(ctx.site)
     const origin = expand(window.location.origin)
     $tools.html(`
@@ -637,25 +637,30 @@ const bind = async ($item, item) => {
     return
   }
 
+  // trust === 'local' — the viewer's own page: the full live toolbar, the
+  // same bar as a trusted page wears — status left, icon actions right.
+  // run is opt-in (RUN directive): one-shot capture has no pty, so anything
+  // that prompts — sudo above all — would hang. The live terminal always works.
+  const $tools = $item.find('.terminal-tools').addClass('t-bar')
+  $tools.html(`
+    <span class="t-status"></span>
+    <span class="t-actions">
+      ${opts.run ? `<button class="t-run" title="run once, capture the output">${ICONS.play} run</button>` : ''}
+      <button class="t-term" title="toggle a live terminal with the script pasted">${ICONS.terminal} terminal</button>
+      <button class="t-tab" title="open the session in a new tab">${ICONS.external} tab</button>
+    </span>
+  `)
+
   // A signed item wears its mark on a local page as well — the same /verify
   // call, no gate involved: a mark, not a ceremony.
   if (item.signature) {
     post(base, '/terminal/verify', { source: item.text, page: ctx.ref, signature: item.signature })
       .then(r => r.json()).then(v => {
-        const mark = v.signed_by ? `signed by ${v.signed_by}` : `signature ${v.signature || 'unknown'}`
-        $item.find('.terminal-tools').prepend(`<span class="t-verify" title="${expand(v.at || v.signature || '')}">${expand(mark)}</span>`)
+        const ok = Boolean(v.signed_by)
+        const mark = ok ? `signed by ${expand(v.signed_by)}` : `signature ${expand(v.signature || 'unknown')}`
+        $tools.find('.t-status').html(`<span class="t-verify ${ok ? 't-ok' : 't-bad'}" title="${expand(v.at || v.signature || '')}">${ok ? ICONS.shield : ICONS.cross}<span>${mark}</span></span>`)
       }).catch(() => {})
   }
-
-  // trust === 'local' — the viewer's own page: the full live toolbar, as before.
-  // run is opt-in (RUN directive): one-shot capture has no pty, so anything
-  // that prompts — sudo above all — would hang. The live terminal always works.
-  const $tools = $item.find('.terminal-tools')
-  $tools.html(`
-    ${opts.run ? '<button class="t-run" title="run once, capture the output">run</button>' : ''}
-    <button class="t-term" title="toggle a live terminal with the script pasted">terminal</button>
-    <button class="t-tab" title="open the session in a new tab">tab ↗</button>
-  `)
 
   const $panel = $item.find('.terminal-panel')
   $panel.css('background', schemeFor(opts.scheme).background)

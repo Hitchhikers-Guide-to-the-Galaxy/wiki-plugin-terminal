@@ -501,6 +501,8 @@ export const ICONS = {
   lock: icon('<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
   unlock: icon('<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>'),
   play: icon('<polygon points="5 3 19 12 5 21 5 3"/>'),
+  terminal: icon('<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>'),
+  external: icon('<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>'),
 }
 
 export const STYLE = `
@@ -525,12 +527,14 @@ export const STYLE = `
   .terminal-item .terminal-tools { margin-top:4px }
   .terminal-item .terminal-tools button { margin-right:4px; font-size:11px }
 
-  /* Trust bar (a page from another site): verdict on the left, the run on
-     the right. Icons carry the state — a tick for verified, a shield for
-     signed, a cross for not verified, a padlock for the grant: closed and
-     red while this origin is locked out (click to unlock), open and grey
-     once a grant is held (click to forget it). */
-  .terminal-item .terminal-tools.t-trust { display:flex; align-items:center;
+  /* The toolbar is one bar on every page: status on the left, actions on
+     the right, each action an icon with its word. On a trusted page from
+     another site the status carries the verdict — a tick for verified, a
+     shield for signed, a cross for not verified — and a padlock for the
+     grant: closed and red while this origin is locked out (click to unlock),
+     open and grey once a grant is held (click to forget it). On a local page
+     the status holds only a signature mark, if the item has one. */
+  .terminal-item .terminal-tools.t-bar { display:flex; align-items:center;
     justify-content:space-between; gap:6px; flex-wrap:wrap }
   .terminal-item .t-status { display:inline-flex; align-items:center; gap:6px;
     font-size:11px; color:#666; min-height:22px }
@@ -545,11 +549,11 @@ export const STYLE = `
   .terminal-item .terminal-tools button.t-lock.t-open { color:#999 }
   .terminal-item .terminal-tools button.t-lock:hover { color:#333 }
   .terminal-item .t-actions { margin-left:auto; display:inline-flex; gap:4px }
-  .terminal-item .t-actions button { margin:0 }
-  .terminal-item .terminal-tools button.t-run-remote { display:inline-flex;
+  .terminal-item .terminal-tools .t-actions button { margin:0; display:inline-flex;
     align-items:center; gap:4px }
-  .terminal-item .terminal-tools button.t-run-remote .t-icon { width:10px; height:10px;
-    fill:currentColor }
+  .terminal-item .t-actions .t-icon { width:11px; height:11px }
+  .terminal-item .t-actions .t-run .t-icon, .terminal-item .t-actions .t-run-remote .t-icon {
+    width:10px; height:10px; fill:currentColor }
   .terminal-item.term-open .terminal-tools .t-term { background:#333; color:#fff }
   .terminal-item .terminal-reply { margin-top:4px }
   .terminal-item .terminal-reply pre.hljs { margin:0; padding:6px }
