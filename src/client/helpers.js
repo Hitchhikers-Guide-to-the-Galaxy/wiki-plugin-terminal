@@ -490,10 +490,23 @@ export const makeCaptureScanner = onResult => {
 
 // Display CSS, shared by both faces (moved from terminal.js).
 const THEME = schemeFor('dark')
+// Classic line icons (Feather-style, 24-box, stroked in currentColor) for the
+// trust bar. Inline so the plugin ships no icon font and works offline.
+const icon = (body, cls = '') =>
+  `<svg class="t-icon${cls ? ` ${cls}` : ''}" viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`
+export const ICONS = {
+  check: icon('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'),
+  shield: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/>'),
+  cross: icon('<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'),
+  lock: icon('<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
+  unlock: icon('<rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>'),
+  play: icon('<polygon points="5 3 19 12 5 21 5 3"/>'),
+}
+
 export const STYLE = `
   .terminal-item .terminal-script { background:#fff8e6; border-left:3px solid #ffb000 }
   .terminal-item .terminal-script code.hljs { background:transparent;
-    white-space:pre-wrap; padding:6px }
+    white-space:pre-wrap; padding:6px; display:block }
   .terminal-item .term-need { border-radius:3px; padding:0 3px; cursor:pointer;
     border-bottom:1px dotted currentColor; font-weight:600 }
   .terminal-item .term-need-keychain { color:#6f42c1; background:#f3eeff }
@@ -511,6 +524,32 @@ export const STYLE = `
     background:#fff8e6; border-left:3px solid #ffb000; padding:2px 6px; margin-top:4px }
   .terminal-item .terminal-tools { margin-top:4px }
   .terminal-item .terminal-tools button { margin-right:4px; font-size:11px }
+
+  /* Trust bar (a page from another site): verdict on the left, the run on
+     the right. Icons carry the state — a tick for verified, a shield for
+     signed, a cross for not verified, a padlock for the grant: closed and
+     red while this origin is locked out (click to unlock), open and grey
+     once a grant is held (click to forget it). */
+  .terminal-item .terminal-tools.t-trust { display:flex; align-items:center;
+    justify-content:space-between; gap:6px; flex-wrap:wrap }
+  .terminal-item .t-status { display:inline-flex; align-items:center; gap:6px;
+    font-size:11px; color:#666; min-height:22px }
+  .terminal-item .t-icon { width:13px; height:13px; flex:none; fill:none;
+    stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round }
+  .terminal-item .t-verify { display:inline-flex; align-items:center; gap:4px }
+  .terminal-item .t-verify.t-ok { color:#0a7d5a }
+  .terminal-item .t-verify.t-bad { color:#b03a3a }
+  .terminal-item .terminal-tools button.t-lock { display:inline-flex; align-items:center;
+    background:none; border:none; padding:2px; margin:0; cursor:pointer; color:#b03a3a }
+  .terminal-item .terminal-tools button.t-lock .t-icon { width:14px; height:14px }
+  .terminal-item .terminal-tools button.t-lock.t-open { color:#999 }
+  .terminal-item .terminal-tools button.t-lock:hover { color:#333 }
+  .terminal-item .t-actions { margin-left:auto; display:inline-flex; gap:4px }
+  .terminal-item .t-actions button { margin:0 }
+  .terminal-item .terminal-tools button.t-run-remote { display:inline-flex;
+    align-items:center; gap:4px }
+  .terminal-item .terminal-tools button.t-run-remote .t-icon { width:10px; height:10px;
+    fill:currentColor }
   .terminal-item.term-open .terminal-tools .t-term { background:#333; color:#fff }
   .terminal-item .terminal-reply { margin-top:4px }
   .terminal-item .terminal-reply pre.hljs { margin:0; padding:6px }

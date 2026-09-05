@@ -69,18 +69,21 @@ site runs only if that site is listed in
 mode 600, reloaded on change) AND the service, fetching the page from that
 site itself, finds the item text byte-equal to what the browser sent.
 Publication is the signature: only the site's owner can publish there. A
-trusted page's toolbar wears `verified · <site>`; a stale or edited copy is
-refused. Directives travel with the text, so a page cannot strip or alter a
+trusted page's toolbar wears a tick and the site's name (a shield for a
+signed item, a cross for a copy that does not match); a stale or edited copy
+is refused. Directives travel with the text, so a page cannot strip or alter a
 `GUARD`, and `service:` is honoured on local pages only.
 
 **Keyboard trust — the person consents.** A request from a non-local
 origin (the public page itself, opened in a browser on this machine) also
-needs a grant: the person clicks **unlock**, a popup on `terminal.localhost`
-asks whether that origin may run verified scripts for 30 minutes, and hands
-the page an origin-bound HMAC token by `postMessage`. The token lives in
-that tab's `sessionStorage`, is sent as a bearer and as the first websocket
-frame, and dies with the service (the secret is minted at start). Never a
-cookie. Nothing runs on view: a `GUARD` on a non-local page is a button, not
+needs a grant: the toolbar shows a closed padlock and no run button. The
+person clicks the padlock, a popup on `terminal.localhost` asks whether that
+origin may run verified scripts for 30 minutes, and hands the page an
+origin-bound HMAC token by `postMessage`. The padlock opens and the run
+button appears; clicking the open padlock forgets the grant for that tab.
+The token lives in that tab's `sessionStorage`, is sent as a bearer and as
+the first websocket frame, and dies with the service (the secret is minted
+at start). Never a cookie. Nothing runs on view: a `GUARD` on a non-local page is a button, not
 a poll.
 
 **Signed items — trust that follows the author.** Since 0.9.0 an item may

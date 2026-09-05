@@ -39,7 +39,7 @@ import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
 import { expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, originTrust,
   parseDirectives, schemeFor, attachResult, applyNeeds, resolveScript, needsPayload,
-  needWarnings, buttonLabel, STYLE, serviceOrigin, pageRef, isLocalHost } from './helpers.js'
+  needWarnings, buttonLabel, STYLE, ICONS, serviceOrigin, pageRef, isLocalHost } from './helpers.js'
 
 hljs.registerLanguage('bash', bash)
 
@@ -547,23 +547,45 @@ const bind = async ($item, item) => {
     // page as its home site publishes it before anything runs, and a public
     // origin also needs the person's grant. Everything is a click; nothing
     // runs on view — a GUARD is a button here, never a poll.
-    const $tools = $item.find('.terminal-tools')
+    // The trust bar: verdict (and the padlock) on the left, actions on the
+    // right. Everything starts hidden but the verdict; the service's answer
+    // decides what appears. Locked means nothing runs, so the run and check
+    // buttons are absent — the padlock is the one thing to click.
+    const $tools = $item.find('.terminal-tools').addClass('t-trust')
     const site = expand(ctx.site)
+    const origin = expand(window.location.origin)
     $tools.html(`
-      <span class="t-verify" title="checking with ${site}…">verifying…</span>
-      <button class="t-run-remote" title="run this script, as ${site} publishes it, on your own machine">▶ run · ${site}</button>
-      ${opts.guard ? `<button class="t-check" title="run the GUARD test: ${expand(opts.guard)}">check</button>` : ''}
-      ${!ctx.isLocalOrigin ? `<button class="t-unlock" title="allow ${expand(window.location.origin)} to run verified scripts on this machine">unlock</button>` : ''}
+      <span class="t-status">
+        <span class="t-verify" title="checking with ${site}…">verifying…</span>
+        ${!ctx.isLocalOrigin ? `<button class="t-lock" title="checking…">${ICONS.lock}</button>` : ''}
+      </span>
+      <span class="t-actions">
+        ${opts.guard ? `<button class="t-check" title="run the GUARD test: ${expand(opts.guard)}">check</button>` : ''}
+        <button class="t-run-remote" title="run this script, as ${site} publishes it, on your own machine">${ICONS.play} run</button>
+      </span>
     `)
     const $verify = $tools.find('.t-verify')
+    const $lock = $tools.find('.t-lock')
+    const $acts = $tools.find('.t-run-remote, .t-check')
+    $acts.hide()
     const showVerdict = v => {
       // Signed by a trusted key beats the site: it holds on any site, offline.
-      const who = v.signed_by ? `signed by ${v.signed_by}` : `verified · ${v.site || ctx.site}`
       const stale = !v.signed_by && item.signature && v.signature && v.signature !== 'ok' ? ' · signature stale' : ''
-      if (v.ok) $verify.text(`${who}${stale}${v.locked ? ' · locked' : ''}`).attr('title', (v.at || '') + (stale ? ` — ${v.signature}` : ''))
-      else $verify.text(`not verified${stale}`).attr('title', v.why || '')
-      $tools.find('.t-run-remote, .t-check').prop('disabled', !v.ok)
-      $tools.find('.t-unlock').toggle(Boolean(v.locked))
+      if (v.ok) {
+        const who = v.signed_by ? `signed by ${expand(v.signed_by)}` : expand(v.site || ctx.site)
+        $verify.html(`${v.signed_by ? ICONS.shield : ICONS.check}<span>${who}${stale}</span>`)
+          .attr('title', `${v.signed_by ? 'signed by a trusted key' : `verified against ${v.site || ctx.site}`}${v.at ? ` · ${v.at}` : ''}${stale ? ` — ${v.signature}` : ''}`)
+          .removeClass('t-bad').addClass('t-ok')
+      } else {
+        $verify.html(`${ICONS.cross}<span>not verified${stale}</span>`).attr('title', v.why || '')
+          .removeClass('t-ok').addClass('t-bad')
+      }
+      const locked = Boolean(v.locked)
+      $lock.toggleClass('t-open', !locked).html(locked ? ICONS.lock : ICONS.unlock)
+        .attr('title', locked
+          ? `locked — click to allow ${origin} to run verified scripts on this machine`
+          : `unlocked for this tab — click to lock ${origin} out again`)
+      $acts.toggle(v.ok && !locked)
     }
     const verify = async () => {
       try {
@@ -572,9 +594,21 @@ const bind = async ($item, item) => {
       } catch (err) { showVerdict({ ok: false, why: String(err) }) }
     }
     verify()
-    window.addEventListener('wiki-terminal-unlocked', () => { if (document.contains($tools.get(0))) verify() })
+    const reverify = () => { if (document.contains($tools.get(0))) verify() }
+    window.addEventListener('wiki-terminal-unlocked', reverify)
+    window.addEventListener('wiki-terminal-locked', reverify)
     $tools.find('.t-run-remote').on('click', () => run($item, script, base, opts.host, null, ctx, item))
-    $tools.find('.t-unlock').on('click', async () => { await unlock(base); verify() })
+    // The padlock toggles the grant for this tab: closed → mint one on the
+    // service's own page; open → forget it here (the service keeps its secret;
+    // the next click mints afresh). Every toolbar on the page follows suit.
+    $lock.on('click', async () => {
+      if ($lock.hasClass('t-open')) {
+        try { sessionStorage.removeItem(grantKey(base)) } catch {}
+        window.dispatchEvent(new CustomEvent('wiki-terminal-locked', { detail: { base } }))
+      } else if (await unlock(base)) {
+        window.dispatchEvent(new CustomEvent('wiki-terminal-unlocked', { detail: { base } }))
+      } else verify()
+    })
     $tools.find('.t-check').on('click', async () => {
       try {
         const res = await post(base, '/terminal/check',
