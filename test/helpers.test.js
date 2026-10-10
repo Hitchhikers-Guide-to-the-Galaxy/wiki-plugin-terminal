@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { expand, sessionName, wsUrl, makeCaptureScanner, isLocalHost, isLocalContext,
-  isTrustedAuthor, originTrust, serviceBase, parseDirectives, schemeFor, SCHEMES,
+  isTrustedAuthor, originTrust, serviceBase, serviceCandidates, setServiceBase, DOJO_PORT, parseDirectives, schemeFor, SCHEMES,
   attachResult, parseNeed, chipHtml, applyNeeds, needTitle, isSecret, needWarnings,
   resolveScript, needsPayload, RESERVED_NAMES, buttonLabel } from '../src/client/helpers.js'
 
@@ -461,4 +461,21 @@ test('canonicalEvent hashes match the Python-made fixture byte for byte', () => 
     const id = createHash('sha256').update(canon, 'utf8').digest('hex')
     assert.equal(id, v.event_id, `event id: ${v.name}`)
   }
+})
+
+test('serviceCandidates: page scheme, other scheme, then the Dojo port', () => {
+  assert.deepEqual(serviceCandidates('https://terminal.localhost'),
+    ['https://terminal.localhost', 'http://terminal.localhost', `http://terminal.localhost:${DOJO_PORT}`])
+  assert.deepEqual(serviceCandidates('http://terminal.localhost'),
+    ['http://terminal.localhost', 'https://terminal.localhost', 'http://terminal.localhost:4288'])
+  for (const c of serviceCandidates('https://terminal.localhost')) assert.match(c, /^https?:\/\/terminal\.localhost(:\d+)?$/)
+})
+
+test('a resolved service base is used by later calls; an explicit local service still wins', () => {
+  setServiceBase('http://terminal.localhost:4288')
+  assert.equal(serviceBase({}, 'https:'), 'http://terminal.localhost:4288')
+  assert.equal(serviceBase({ service: 'http://example.localhost:9/' }, 'https:', true), 'http://example.localhost:9')
+  assert.equal(serviceBase({ service: 'http://evil.example/' }, 'https:', false), 'http://terminal.localhost:4288')
+  setServiceBase(null)
+  assert.equal(serviceBase({}, 'https:'), 'https://terminal.localhost')
 })

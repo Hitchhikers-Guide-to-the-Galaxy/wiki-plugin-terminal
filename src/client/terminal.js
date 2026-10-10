@@ -39,7 +39,8 @@ import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
 import { expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, originTrust,
   parseDirectives, schemeFor, attachResult, applyNeeds, resolveScript, needsPayload,
-  needWarnings, buttonLabel, STYLE, ICONS, serviceOrigin, pageRef, isLocalHost } from './helpers.js'
+  needWarnings, buttonLabel, STYLE, ICONS, serviceOrigin, pageRef, isLocalHost,
+  serviceCandidates, setServiceBase } from './helpers.js'
 
 hljs.registerLanguage('bash', bash)
 
@@ -509,10 +510,14 @@ const bind = async ($item, item) => {
   // (a potentially trustworthy origin, exempt from mixed content) and needs
   // no locally trusted certificate; try the page's scheme, then the other.
   if (!(await healthy(base))) {
-    const other = base.startsWith('https:') ? base.replace(/^https:/, 'http:') : base.replace(/^http:/, 'https:')
     if (item.service && ctx.isLocalPage) return
-    if (!(await healthy(other))) return // no local pty reachable: display only
-    base = other
+    let found = null
+    for (const candidate of serviceCandidates(base).slice(1)) {
+      if (await healthy(candidate)) { found = candidate; break }
+    }
+    if (!found) return // no local pty reachable: display only
+    base = found
+    setServiceBase(found)
   }
   const trusted = await trustList(base)
   let trust = originTrust(ctx.site, window.isLocalMirror, trusted.sites)

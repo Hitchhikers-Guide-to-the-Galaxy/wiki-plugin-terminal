@@ -41,9 +41,11 @@ Design: [Terminal Plugin](https://plugin.fedwiki.club/terminal-plugin.html)
     #   from terminal_service import router as terminal_router
     #   app.include_router(terminal_router)
 
-Or standalone: `uvicorn terminal_service:app --port 4248` (bind 127.0.0.1).
+Or standalone: `uvicorn terminal_service:app --host 127.0.0.1 --port 4288`.
 
-The client reaches the service as `http://terminal.localhost` — a Caddy route to port 4248, per the hitchhiker 42xx port policy. Port 8000 was abandoned: Bitfocus Companion owns it.
+The client first looks for the service at `http://terminal.localhost` (and `https://`) — a Caddy route on the default ports, per the hitchhiker 42xx port policy. When nothing answers there it tries `http://terminal.localhost:4288` directly (since 0.9.5), which is where the [Dojo installer](https://iknowkungfu.club/view/dojo-plan) runs the service on a newcomer's laptop with no proxy in front. Whichever answers is used for every later call. Browsers resolve `*.localhost` to loopback on their own, so no hosts-file entry is needed. Port 8000 was abandoned: Bitfocus Companion owns it; 4248 is avoided because other local services use it.
+
+Safari may refuse to let an https page reach plain-http loopback; a page forked into your own local wiki is a local page and works in every browser.
 
 ## Succession
 

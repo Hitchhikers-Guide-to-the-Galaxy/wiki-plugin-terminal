@@ -22,8 +22,25 @@ export const serviceBase = (item, protocol = 'http:', isLocalPage = true) => {
   // a forked public page could otherwise repoint run, needs and the pty at a
   // stranger's host (Terminal Plugin Audit, finding 4.1).
   if (item.service && isLocalPage) return item.service.replace(/\/$/, '')
+  if (resolvedBase) return resolvedBase
   const scheme = protocol === 'https:' ? 'https' : 'http'
   return `${scheme}://terminal.localhost`
+}
+
+// Where the pty service was actually found, once bind has probed for it. Every
+// later call (run, needs, options, the websocket) uses the same answer.
+let resolvedBase = null
+export const setServiceBase = base => { resolvedBase = base }
+
+// The places a viewer's own pty service may answer, in order: terminal.localhost
+// on the page's scheme, on the other scheme, then on its own port 4288. A
+// newcomer's installer (the Dojo) runs uvicorn on 127.0.0.1:4288 with no proxy
+// in front, so the bare default ports find nothing there. Still loopback only.
+export const DOJO_PORT = 4288
+export const serviceCandidates = base => {
+  const other = base.startsWith('https:') ? base.replace(/^https:/, 'http:') : base.replace(/^http:/, 'https:')
+  const direct = `http://terminal.localhost:${DOJO_PORT}`
+  return [...new Set([base, other, direct])]
 }
 
 // The service's own origin, for postMessage checks and the trust fetch.
