@@ -132,7 +132,7 @@ export const originTrust = (originSite, isMirror, trustedAuthors) => {
 //                       line, truncated)
 //   BOOT: claude        command a BUTTON click runs first when its click just
 //                       created the session — start the REPL, wait for it to
-//                       draw, then paste. An already-live session skips boot.
+//                       draw, then paste. A session whose shell is idle at its prompt boots too (0.9.7).
 //   GUARD: <command>    readiness test for a BUTTON, run one-shot server-side.
 //                       Exit 0 = ready. Otherwise the button turns into a
 //                       fix-it affordance (see GUARDLABEL): clicking it opens

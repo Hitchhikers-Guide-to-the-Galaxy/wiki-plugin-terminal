@@ -792,11 +792,33 @@ const bind = async ($item, item) => {
         ? `send to session ${sessionName(item, opts.session)}`
         : `${opts.guard} — failing; click to open the terminal and put it right`)
     }
+    // After BOOT: true once the session's shell no longer holds the terminal
+    // (the REPL is in the foreground), false if it still does after 20 s, or
+    // when the service is too old to say (no idle list): then trust the boot.
+    const bootedInto = async (maxMs = 20000) => {
+      const name = sessionName(item, opts.session)
+      const end = Date.now() + maxMs
+      while (Date.now() < end) {
+        await new Promise(r => setTimeout(r, 400))
+        try {
+          const j = await (await fetch(`${base}/terminal/health`, { signal: AbortSignal.timeout(3000) })).json()
+          if (!Array.isArray(j.idle)) return true
+          if (!j.idle.includes(name)) return true
+        } catch { /* keep waiting */ }
+      }
+      return false
+    }
+
+    // A session needs BOOT when it does not exist yet, or (0.9.7) when its
+    // shell holds the terminal with nothing running: opened earlier as a plain
+    // window, or its REPL exited. Pasting a prompt into a bare zsh makes it
+    // parse the paragraph as a command line ("parse error near `then'").
     const freshSession = async () => {
       try {
-        const res = await fetch(`${base}/terminal/health`, { signal: AbortSignal.timeout(1500) })
+        const res = await fetch(`${base}/terminal/health`, { signal: AbortSignal.timeout(3000) })
         const j = await res.json()
-        return !(j.sessions || []).includes(sessionName(item, opts.session))
+        const name = sessionName(item, opts.session)
+        return !(j.sessions || []).includes(name) || (j.idle || []).includes(name)
       } catch { return false } // health raced away — treat as live, paste plainly
     }
 
@@ -866,15 +888,24 @@ const bind = async ($item, item) => {
       $go.data('busy', true).prop('disabled', true)
       try {
         const ok = await guardOk()
-        // BOOT: when this click is what creates the session, run the boot
-        // command first (start the REPL) and wait for its first screen to
-        // finish drawing. An already-live session is assumed booted.
+        // BOOT: when this click creates the session, or finds its shell idle
+        // at the prompt, run the boot command first (start the REPL) and wait
+        // for its first screen to finish drawing. A session with something
+        // running in the foreground is assumed booted.
         const fresh = (opts.boot || !ok) ? await freshSession() : false
         const handle = await armed()
         if (opts.boot && fresh) {
           $go.text('starting…')
           await handle.ready
           handle.send(opts.boot + '\r')
+          // The prompt goes only to the REPL: wait for the shell to hand the
+          // terminal over (the service's idle list drops the session), and if
+          // it never does, open the terminal instead of pasting into zsh.
+          if (!(await bootedInto())) {
+            await setOpen(true)
+            $go.text('did not start — see the terminal')
+            return
+          }
           await awaitQuiet(handle)
         }
         if (!ok) {

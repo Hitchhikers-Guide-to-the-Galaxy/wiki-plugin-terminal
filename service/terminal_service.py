@@ -337,6 +337,16 @@ class Session:
         except Exception:
             self.clients.discard(ws)
 
+    def shell_idle(self) -> bool:
+        """True when the shell itself holds the terminal: nothing (no REPL)
+        runs in the foreground, so a BUTTON's prompt pasted now would be parsed
+        by zsh, not read by claude. The pty fork made the shell a session
+        leader, so its pgid is its pid."""
+        try:
+            return os.tcgetpgrp(self.fd) == self.pid
+        except OSError:
+            return False
+
     def write(self, data: str):
         os.write(self.fd, data.encode())
 
@@ -812,7 +822,8 @@ def http_origin_allowed(request: Request) -> bool:
 def health(request: Request):
     origin = request.headers.get("origin")
     locked = bool(origin) and not origin_is_local(origin) and not check_grant(bearer_of(request), origin)
-    return {"status": "ok", "sessions": sorted(sessions), "locked": locked, "trust": bool(trust.sites())}
+    idle = sorted(n for n, s in sessions.items() if s.shell_idle())
+    return {"status": "ok", "sessions": sorted(sessions), "idle": idle, "locked": locked, "trust": bool(trust.sites())}
 
 
 # ── Claude Code conversations ────────────────────────────────────────────────
