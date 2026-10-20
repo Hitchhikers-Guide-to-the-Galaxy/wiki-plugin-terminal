@@ -1321,6 +1321,9 @@ app.add_middleware(
     allow_origin_regex=_cors_regex(),
     allow_methods=["*"],
     allow_headers=["*"],
+    # Starlette >= 0.46 answers the Private/Local Network Access preflight
+    # itself, with 400 unless allowed here (2026-10-20).
+    allow_private_network=True,
 )
 app.middleware("http")(private_network_headers)
 app.include_router(router)
