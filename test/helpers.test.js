@@ -487,3 +487,21 @@ test('PAGE is a run whose output is a page', () => {
   assert.equal(o.script, '~/bin/pi5-disk-report --page')
   assert.equal(parseDirectives('RUN\necho hi').page, undefined)
 })
+
+import { parseTimeout } from '../src/client/helpers.js'
+
+test('TIMEOUT: an item asks for a longer one-shot run, in seconds or minutes', () => {
+  assert.equal(parseTimeout('300'), 300)
+  assert.equal(parseTimeout('300s'), 300)
+  assert.equal(parseTimeout('90 seconds'), 90)
+  assert.equal(parseTimeout('5m'), 300)
+  assert.equal(parseTimeout('2 min'), 120)
+  assert.equal(parseTimeout('1.5 minutes'), 90)
+  for (const bad of ['', 'soon', '-5', '0', '0.2', '5h', '10; rm -rf ~']) assert.equal(parseTimeout(bad), undefined, bad)
+  const r = parseDirectives('TIMEOUT: 2m\nLABEL: Run the tests\npython3 -I tests.py')
+  assert.equal(r.timeout, 120)
+  assert.equal(r.label, 'Run the tests')
+  assert.equal(r.script, 'python3 -I tests.py')
+  // a line that is not a directive ends the directives: TIMEOUT below the script is script
+  assert.equal(parseDirectives('echo hi\nTIMEOUT: 2m').timeout, undefined)
+})

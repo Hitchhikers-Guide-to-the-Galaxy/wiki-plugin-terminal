@@ -18,6 +18,7 @@
 //   HEIGHT: 320      terminal area height in px
 //   FONT: 14         font size
 //   SESSION: build   pty session name
+//   TIMEOUT: 5m      a longer one-shot run (the service caps it, 600 s by default)
 //
 // Degradation: when the pty service is unreachable (public servers), the item
 // renders as a code-style display only. When reachable (local-first), a
@@ -306,11 +307,12 @@ const renderReply = ($item, { stdout, stderr, exit, verified }) => {
 
 // A HOST directive routes the run through ssh on the named host (the service
 // allowlists it and uses the viewer's own key); without it, the local shell.
-const run = async ($item, script, base, host, session, ctx, item) => {
+const run = async ($item, script, base, host, session, ctx, item, timeout) => {
   $item.trigger('terminal-run', { script })
-  $item.find('.terminal-reply').html('<span class="exit">running…</span>')
+  $item.find('.terminal-reply').html(`<span class="exit">running…${timeout ? ` (up to ${timeout >= 120 ? `${Math.round(timeout / 60)} min` : `${timeout} s`})` : ''}</span>`)
   try {
     const body = { text: script || '', host: host || null, session: session || null }
+    if (timeout) body.timeout = timeout
     // A page that is not local says where it lives and what it publishes; the
     // service checks that against the site itself before anything runs.
     if (ctx && (!ctx.isLocalPage || !ctx.isLocalOrigin)) { body.page = ctx.ref; body.source = item ? item.text : undefined }
@@ -368,14 +370,14 @@ const openPageGhost = ($item, data) => {
 // captured output inline, returning the outcome to the step-through.
 const runStep = async ({ item, $item, body }) => {
   const base = serviceBase(item, window.location.protocol)
-  const { host } = parseDirectives(item.text)
+  const { host, timeout } = parseDirectives(item.text)
   $item.trigger('terminal-run', { script: body })
   $item.find('.terminal-reply').html('<span class="exit">running…</span>')
   try {
     const res = await fetch(`${base}/terminal/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: body || '', host: host || null }),
+      body: JSON.stringify({ text: body || '', host: host || null, ...(timeout ? { timeout } : {}) }),
     })
     const data = await res.json()
     renderReply($item, data)
@@ -662,7 +664,7 @@ const bind = async ($item, item) => {
     const reverify = () => { if (document.contains($tools.get(0))) verify() }
     window.addEventListener('wiki-terminal-unlocked', reverify)
     window.addEventListener('wiki-terminal-locked', reverify)
-    $tools.find('.t-run-remote').on('click', () => run($item, script, base, opts.host, null, ctx, item))
+    $tools.find('.t-run-remote').on('click', () => run($item, script, base, opts.host, null, ctx, item, opts.timeout))
     // The padlock toggles the grant for this tab: closed → mint one on the
     // service's own page; open → forget it here (the service keeps its secret;
     // the next click mints afresh). Every toolbar on the page follows suit.
@@ -827,7 +829,7 @@ const bind = async ($item, item) => {
   $tools.find('.t-run').on('click', async () => {
     const session = sessionName(item, opts.session)
     await resolveNeeds(base, session, opts.needs, $box)
-    const data = await run($item, scriptFor($box, script, opts.needs), base, opts.host, session)
+    const data = await run($item, scriptFor($box, script, opts.needs), base, opts.host, session, undefined, undefined, opts.timeout)
     if (opts.page) openPageGhost($item, data)
   })
 

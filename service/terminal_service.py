@@ -1061,11 +1061,29 @@ def options(request: Request):
             "claude_sessions": list_claude_sessions()}
 
 
+# A one-shot run's time limit. An item may ask for more with TIMEOUT:, up to a
+# ceiling the service owns: a page can ask, not grant. Work longer than the
+# ceiling belongs in a live session (BUTTON/SESSION), which has no limit.
+RUN_TIMEOUT_DEFAULT = 30
+RUN_TIMEOUT_MAX = int(os.environ.get("WIKI_TERMINAL_RUN_TIMEOUT_MAX", "600"))
+
+
+def run_timeout(asked) -> tuple[int, bool]:
+    """(seconds to allow, whether the ask was cut down to the ceiling)."""
+    try:
+        n = int(asked)
+    except (TypeError, ValueError):
+        return RUN_TIMEOUT_DEFAULT, False
+    if n < 1:
+        return RUN_TIMEOUT_DEFAULT, False
+    return (RUN_TIMEOUT_MAX, True) if n > RUN_TIMEOUT_MAX else (n, False)
+
+
 class RunRequest(BaseModel):
     text: str
     cwd: str | None = None
     host: str | None = None
-    timeout: int = 30
+    timeout: int | None = None
     session: str | None = None
     # Where the item lives and what its home site publishes — required for a
     # page that is not local; `source` is the whole item text, `text` its script.
@@ -1105,17 +1123,22 @@ def run(req: RunRequest, request: Request):
             if os.path.exists(needs_file):
                 text = f"source {shlex.quote(needs_file)}\n{text}"
         cmd = ["zsh", "-c", text]
+    limit, clamped = run_timeout(req.timeout)
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=req.timeout, cwd=cwd,
+            cmd, capture_output=True, text=True, timeout=limit, cwd=cwd,
             env=interactive_env(),
         )
-        reply = {"stdout": proc.stdout, "stderr": proc.stderr, "exit": proc.returncode}
+        reply = {"stdout": proc.stdout, "stderr": proc.stderr, "exit": proc.returncode, "timeout": limit}
+        if clamped:
+            reply["timeout_clamped"] = f"asked {req.timeout}s; the ceiling is {RUN_TIMEOUT_MAX}s"
         if verdict.site or verdict.signed_by:
             reply["verified"] = {"site": verdict.site, "at": verdict.at, "signed_by": verdict.signed_by}
         return reply
     except subprocess.TimeoutExpired:
-        return {"stdout": "", "stderr": f"timed out after {req.timeout}s", "exit": -1}
+        hint = (" — ask for more with a TIMEOUT: line (up to %ds), or run it in a live session" % RUN_TIMEOUT_MAX) if limit < RUN_TIMEOUT_MAX \
+            else " — longer than any one-shot run may take; run it in a live session (BUTTON/SESSION)"
+        return {"stdout": "", "stderr": f"timed out after {limit}s{hint}", "exit": -1, "timeout": limit}
 
 
 class KillRequest(BaseModel):

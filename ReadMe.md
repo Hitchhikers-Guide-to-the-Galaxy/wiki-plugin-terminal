@@ -59,6 +59,10 @@ succession declarations from plugins into `/system/factories.json`.
 
 A `PAGE` directive (it implies `RUN`) treats the run's stdout as page JSON — `{title, story, journal?}` — and opens it as a ghost page beside the page the item is on, the way the Voice Tool and the Plan Tool open theirs. Fork the ghost to save it. A ghost whose title names a page already on the site is written over that page in place; a script that refreshes a report sends the page's existing journal plus one `create` action carrying the new story, so the previous report stays one click back in the journal (wiki-client's revision replay restores a whole story from a `create`), rather than one step per paragraph. `~/bin/pi5-disk-report --page` is the first such script.
 
+## TIMEOUT: a longer one-shot run
+
+A run from the toolbar (or a `RUN`/`PAGE` item, or a workflow step) is a one-shot capture, and the service stops it after 30 seconds. An item that needs longer says so in a leading directive: `TIMEOUT: 300`, `TIMEOUT: 300s`, `TIMEOUT: 5m` or `TIMEOUT: 2 min`. The service clamps the ask to its own ceiling, 600 seconds unless `WIKI_TERMINAL_RUN_TIMEOUT_MAX` says otherwise, and the reply names the limit it used and whether the ask was cut down. A page can ask for time; it cannot grant itself any. Work longer than the ceiling belongs in a live session (`BUTTON` with `SESSION`), which has no limit. When a run does time out, the message says which of the two to reach for.
+
 ## Security
 
 The pty service is remote code execution by design. It binds to

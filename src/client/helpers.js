@@ -148,7 +148,7 @@ export const originTrust = (originSite, isMirror, trustedAuthors) => {
 // A valued directive requires a value, introduced by a colon or whitespace — so
 // shell lines like `SIZE=10` are never mistaken for directives. Keywords are
 // case-sensitive uppercase, per the convention.
-const DIRECTIVE = /^(COLOR|COLOUR|THEME|SCHEME|HEIGHT|FONT|SIZE|SESSION|HOST|SSH|LABEL|BOOT|GUARD|GUARDLABEL)[:\s]\s*(\S.*)$/
+const DIRECTIVE = /^(COLOR|COLOUR|THEME|SCHEME|HEIGHT|FONT|SIZE|SESSION|HOST|SSH|LABEL|BOOT|GUARD|GUARDLABEL|TIMEOUT)[:\s]\s*(\S.*)$/
 const FLAG = /^RUN:?\s*$/
 // PAGE: the run's stdout is page JSON ({title, story, journal?}); show it as a
 // ghost page beside this one. Fork it to save: a ghost whose title is a page
@@ -230,6 +230,16 @@ export const parseNeed = (name, spec) => {
   return { name, kind: 'value', value: rest, link }
 }
 
+// TIMEOUT: how long a one-shot run may take, asked by the item: `300`, `300s`,
+// `5m`, `5 min`. Seconds, a whole number, or undefined when it does not read.
+// The service clamps it to its own ceiling; a page can ask, not grant.
+export const parseTimeout = value => {
+  const m = String(value || '').trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*(s|sec|secs|seconds?|m|min|mins|minutes?)?$/)
+  if (!m) return undefined
+  const n = parseFloat(m[1]) * (m[2] && m[2].startsWith('m') ? 60 : 1)
+  return n >= 1 ? Math.round(n) : undefined
+}
+
 export const parseDirectives = text => {
   const lines = String(text || '').split('\n')
   const opts = {}
@@ -258,6 +268,7 @@ export const parseDirectives = text => {
     else if (key === 'BOOT') opts.boot = value
     else if (key === 'GUARD') opts.guard = value
     else if (key === 'GUARDLABEL') opts.guardLabel = value
+    else if (key === 'TIMEOUT') opts.timeout = parseTimeout(value)
     else opts.scheme = value.toLowerCase()
   }
   while (i < lines.length && lines[i].trim() === '') i++
