@@ -1290,9 +1290,9 @@ button{font:inherit;padding:.5em 1.2em;margin:.3em .4em .3em 0;border-radius:6px
 button.primary{background:#2a6;color:#fff;border-color:#2a6}code{background:#eee;padding:.1em .3em;border-radius:3px}
 ul{padding-left:1.2em}small{color:#666}</style></head><body>
 <h2>Allow <code>__ORIGIN__</code> to run verified scripts on this Mac?</h2>
-<p>Only scripts that <code>__ORIGIN__</code> itself publishes will run, and only when you click them. The grant lasts <span id="mins">30</span> minutes, for that origin, in the tab that asked. Closing this service, or Lock everything, ends every grant.</p>
-<p><button class="primary" id="unlock">Unlock for <span id="mins2">30</span> min</button>
-<button id="unlock8">Unlock for 8 h</button>
+<p>A button on a page of <code>__ORIGIN__</code> wants to run on this Mac. Only scripts that <code>__ORIGIN__</code> itself publishes will run, checked against the page as it publishes it, and only when you click them. The grant is for that origin, in the tab that asked. Restarting this service, or Lock everything, ends every grant.</p>
+<p><button class="primary" id="unlock8">Unlock for 8 hours</button>
+<button id="unlock">Unlock for 30 minutes</button>
 <button id="lock">Lock everything</button></p>
 <p><small id="status"></small></p>
 <h3>Live grants</h3><ul id="grants"><li><small>none</small></li></ul>

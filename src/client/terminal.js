@@ -641,29 +641,79 @@ const bind = async ($item, item) => {
         $item.find('.terminal-reply').html(`<span class="exit">${ok ? 'guard passes' : `guard fails${j.error ? ` — ${expand(j.error)}` : ''}`}</span>`)
       } catch (err) { renderReply($item, { stdout: '', stderr: String(err), exit: -1 }) }
     })
-    // BUTTON on a trusted page: the click sends the verified script into a
-    // live session on this machine through the service, never the raw socket.
-    // With BOOT the service starts the session's REPL first (the BOOT line it
-    // reads from the verified page, not from this click) and pastes only once
-    // the REPL holds the terminal: a brief pasted into a bare zsh is parsed as
-    // a command line. BUTTON: show opens the session's own page to watch, in
-    // the click, so no popup blocker stands in the way.
+    // BUTTON on a trusted page (0.9.11, David 2026-10-21): one click does it
+    // all, in order.
+    //  1. Consent first. Without a live grant the click opens the Unlock
+    //     window itself — inside the click, since a popup opened after an
+    //     await is blocked — and says so on the button; nothing runs until
+    //     the person allows it. (Before, the click showed a blank terminal and
+    //     only the small padlock led on.)
+    //  2. BUTTON: show opens the session in this page's own terminal panel,
+    //     with ⤢ for full screen and ↗ for a tab, rather than a tab of its own:
+    //     the work is watched beside the plan it changes.
+    //  3. The service starts the REPL from the verified BOOT line, never from
+    //     this click, and pastes only once the REPL holds the terminal.
     if (opts.button) {
       const $go = $box.find('.t-go')
       const name = sessionName(item, opts.session)
-      $go.prop('disabled', false).attr('title', `send to session ${name} on this machine${opts.boot ? `, starting ${expand(opts.boot)} first if it is not running` : ''}`)
+      const $panel = $item.find('.terminal-panel')
+      const $reply = $item.find('.terminal-reply')
+      $panel.css('background', schemeFor(opts.scheme).background)
+      $item.find('.t-paste').hide() // the brief goes through the service, verified, never a raw paste
+      if (!$item.find('.t-tab-remote').length) {
+        $item.find('.t-zoom').after(`<button class="t-tab-remote" title="open the session in a new tab">↗</button>`)
+      }
+      const openPanel = () => {
+        $box.addClass('term-open')
+        const handle = attach($item, item, base, opts)
+        $item.find('.terminal-name').text(name)
+        requestAnimationFrame(() => { handle.refit(); handle.term.focus() })
+        return handle
+      }
+      $item.find('.t-close').on('click', () => { $box.removeClass('term-open'); $panel.removeClass('zoomed') })
+      $item.find('.t-zoom').on('click', () => {
+        $panel.toggleClass('zoomed')
+        requestAnimationFrame(() => attach($item, item, base, opts).refit())
+      })
+      $(document).on('keydown.terminal', event => {
+        if (event.key === 'Escape' && $panel.hasClass('zoomed')) {
+          $panel.removeClass('zoomed')
+          requestAnimationFrame(() => attach($item, item, base, opts).refit())
+        }
+      })
+      $item.find('.t-enter').on('click', () => attach($item, item, base, opts).send('\r'))
+      $item.find('.t-tab-remote').on('click', () =>
+        window.open(`${base}/terminal/page?session=${encodeURIComponent(name)}`, `wiki-terminal-${name}`))
+
+      const ready = () => $go.prop('disabled', false).data('busy', false).removeClass('t-go-sent').text(buttonLabel(opts))
+      $go.prop('disabled', false).attr('title', `run in session ${name} on this machine${opts.boot ? `, starting ${expand(opts.boot)} first if it is not running` : ''}` +
+        (ctx.isLocalOrigin ? '' : ` — the first click asks you to allow ${expand(window.location.host)} on this machine`))
       $go.on('click', async () => {
         if ($go.data('busy')) return
-        $go.data('busy', true).prop('disabled', true)
-        if (opts.buttonShow) window.open(`${base}/terminal/page?session=${encodeURIComponent(name)}`, `wiki-terminal-${name}`)
-        $go.text(opts.boot ? 'starting…' : 'sending…')
+        $reply.empty()
+        if (!ctx.isLocalOrigin && !grantOf(base)) {
+          $go.data('busy', true).prop('disabled', true).text('allow it in the window that opened…')
+          const ok = await unlock(base)
+          if (!ok) {
+            ready()
+            $reply.html(`<span class="exit">Nothing ran: ${expand(window.location.host)} needs your OK to run on this machine. Click the button again and choose <b>Unlock</b> in the window that opens${''} — if no window opened, allow pop-ups for this site.</span>`)
+            return
+          }
+          window.dispatchEvent(new CustomEvent('wiki-terminal-unlocked', { detail: { base } }))
+        }
+        $go.data('busy', true).prop('disabled', true).text(opts.boot ? 'starting…' : 'sending…')
+        if (opts.buttonShow) openPanel()
         try {
           const res = await post(base, '/terminal/paste',
             { session: name, text: script, page: ctx.ref, source: item.text, signature: item.signature || undefined, boot: Boolean(opts.boot) }, ctx)
           const j = await res.json()
-          $go.text(j.ok ? 'sent ✓' : (j.error || 'refused')).toggleClass('t-go-sent', Boolean(j.ok))
-        } catch (err) { $go.text(String(err)) }
-        setTimeout(() => $go.prop('disabled', false).data('busy', false).removeClass('t-go-sent').text(buttonLabel(opts)), 4000)
+          $go.text(j.ok ? 'sent ✓' : 'not sent').toggleClass('t-go-sent', Boolean(j.ok))
+          if (!j.ok) $reply.html(`<span class="exit">${expand(j.error || 'refused')}</span>`)
+        } catch (err) {
+          $go.text('not sent')
+          $reply.html(`<span class="exit">${expand(String(err))}</span>`)
+        }
+        setTimeout(ready, 3000)
       })
     }
     return
