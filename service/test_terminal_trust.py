@@ -319,6 +319,7 @@ def test_trust_view_shows_farms(client, farm):
     assert r.status_code == 200
     body = r.json()
     assert body["farms"] == ["https://fab.fish"] and body["farm_sites"] == 1 and body["except"] == ["lena.solidarity.quest"]
+    assert body["sites"] == ["plan.ide.earth", "time.solidarity.quest"] and body["listed"] == ["plan.ide.earth"]
 
 
 def test_cors_follows_farm_list(client, farm):

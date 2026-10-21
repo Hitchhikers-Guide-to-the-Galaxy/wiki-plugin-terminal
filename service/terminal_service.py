@@ -501,8 +501,11 @@ class TrustStore:
 
     def public(self) -> dict:
         """What a client may know: names, never secrets."""
+        # `sites` is everything the service trusts, listed and farm alike: the
+        # client's originTrust() reads this one field, so a farm site must be in it.
         return {
-            "sites": sorted(self.sites()),
+            "sites": sorted(trusted_sites()),
+            "listed": sorted(self.sites()),
             "farms": self.farms(),
             "farm_sites": len(trusted_sites() - self.sites()),
             "except": sorted(self.excepted()),

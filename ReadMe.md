@@ -76,6 +76,19 @@ signed item, a cross for a copy that does not match); a stale or edited copy
 is refused. Directives travel with the text, so a page cannot strip or alter a
 `GUARD`, and `service:` is honoured on local pages only.
 
+**Farm trust — the farm default.** Listing every site by hand does not
+scale on a farm where almost every wiki carries a plan page, so `trust.json`
+also takes `farms`: `{"farms": ["https://fab.fish"]}`. A farm anchor is a
+site of your own farm; the service reads the farm's site list from the
+anchor's `/system/api.json` (`x-fedwiki-farm.sites`, Farm plugin ≥ 0.10) and
+trusts every site on it as if it were in `sites`. The list is your box's word,
+so a stranger's site cannot claim its way in; it is refreshed every ten
+minutes, and an anchor that does not answer contributes nothing. Sites of
+other people on your farm are still verified by publication, but they are
+trusted — name the ones you do not want under `except`:
+`{"farms": ["https://fab.fish"], "except": ["lena.solidarity.quest"]}`. CORS
+and the consent popup follow the same list, per request, so no restart.
+
 **Keyboard trust — the person consents.** A request from a non-local
 origin (the public page itself, opened in a browser on this machine) also
 needs a grant: the toolbar shows a closed padlock and no run button. The

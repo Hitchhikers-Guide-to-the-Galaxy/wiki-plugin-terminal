@@ -71,13 +71,26 @@ const ensureAssets = () => {
   }
 }
 
-const healthy = async base => {
+// A local page answers in milliseconds; from a public https page the first
+// probe can take seconds — Chrome's local-network-access check, and a
+// permission prompt the person has to answer — so it gets a patient timeout.
+// Aborting it (the old 1.5 s) left the item display-only with no retry
+// (arena.solidarity.quest, 2026-10-21).
+const PROBE_LOCAL_MS = 1500
+const PROBE_PUBLIC_MS = 12000
+const healthy = async (base, ms = PROBE_LOCAL_MS) => {
   try {
-    const res = await fetch(`${base}/terminal/health`, { signal: AbortSignal.timeout(1500) })
+    const res = await fetch(`${base}/terminal/health`, { signal: AbortSignal.timeout(ms) })
     return res.ok
   } catch {
     return false
   }
+}
+
+// The first base that answers, probed together rather than one after another.
+const firstHealthy = async (bases, ms) => {
+  const probes = bases.map(b => healthy(b, ms).then(ok => (ok ? b : Promise.reject(new Error(`no pty at ${b}`)))))
+  try { return await Promise.any(probes) } catch { return null }
 }
 
 // ── Where the page lives, and what this machine trusts ──────────────────────
@@ -509,12 +522,10 @@ const bind = async ($item, item) => {
   // From a public https page a loopback name is reachable over plain http
   // (a potentially trustworthy origin, exempt from mixed content) and needs
   // no locally trusted certificate; try the page's scheme, then the other.
-  if (!(await healthy(base))) {
+  const probeMs = ctx.isLocalOrigin ? PROBE_LOCAL_MS : PROBE_PUBLIC_MS
+  if (!(await healthy(base, probeMs))) {
     if (item.service && ctx.isLocalPage) return
-    let found = null
-    for (const candidate of serviceCandidates(base).slice(1)) {
-      if (await healthy(candidate)) { found = candidate; break }
-    }
+    const found = await firstHealthy(serviceCandidates(base).slice(1), probeMs)
     if (!found) return // no local pty reachable: display only
     base = found
     setServiceBase(found)
