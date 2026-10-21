@@ -424,6 +424,39 @@ def test_paste_never_boots_from_the_askers_word(client, published):
 
 # ── a window opened on a live session sees what it last drew ─────────────────
 
+def test_replay_drops_terminal_queries():
+    # what `claude-squad version` drew on 21 October, then ordinary output
+    asked = b"\x1b]11;?\x1b\\\x1b[6nclaude-squad version 1.0.20\r\n"
+    assert t.without_queries(asked) == b"claude-squad version 1.0.20\r\n"
+    for q in (b"\x1b]10;?\x07", b"\x1b]4;1;?\x1b\\", b"\x1b[c", b"\x1b[>c", b"\x1b[0c", b"\x1b[5n",
+              b"\x1b[?6n", b"\x1b[>0q", b"\x1b[?2004$p", b"\x1b[?u", b"\x1b[14t", b"\x1bP+q544e\x1b\\"):
+        assert t.without_queries(b"a" + q + b"b") == b"ab", q
+    # drawing is kept: colours set, cursor moves, bracketed paste, resize, OSC 133 marks
+    kept = (b"\x1b[1mbold\x1b[0m\x1b[2J\x1b[H\x1b[?2004h\x1b[8;24;80t"
+            b"\x1b]11;rgb:1e1e/1e1e/1e1e\x07\x1b]133;A\x07\x1b[3C")
+    assert t.without_queries(kept) == kept
+
+
+def test_attach_replay_does_not_ask_again(client):
+    name = "replay-query-session"
+    try:
+        with client.websocket_connect(f"/terminal/pty/{name}", headers={"Origin": LOCAL}) as ws:
+            deadline = time.time() + 10
+            while time.time() < deadline and not t.sessions[name].ready:
+                time.sleep(0.1)
+            ws.send_text(json.dumps({"type": "input", "data": "printf '\\033]11;?\\033\\\\asked-marker\\n'\r"}))
+            deadline = time.time() + 5
+            while time.time() < deadline and b"asked-marker\r\n" not in bytes(t.sessions[name].recent):
+                time.sleep(0.1)
+        assert b"\x1b]11;?" in bytes(t.sessions[name].recent)  # the live output asked
+        with client.websocket_connect(f"/terminal/pty/{name}", headers={"Origin": LOCAL}) as ws:
+            first = ws.receive_bytes()
+            assert b"asked-marker" in first and b"\x1b]11;?" not in first  # the replay does not
+    finally:
+        if name in t.sessions:
+            t.sessions.pop(name).close()
+
+
 def test_attach_replays_recent_output(client):
     name = "replay-test-session"
     try:

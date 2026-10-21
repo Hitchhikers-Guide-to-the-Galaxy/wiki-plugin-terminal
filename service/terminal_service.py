@@ -285,6 +285,29 @@ def resolve_needs(session: str, needs: list) -> dict:
 sessions: dict[str, "Session"] = {}
 REPLAY_BYTES = 256 * 1024  # how much of a session's recent output a new window is shown
 
+# Terminal queries: a program asks the terminal something (its colours, the
+# cursor position, what it is) and the terminal answers on the program's input.
+# A replay must not ask again. The program that asked is long gone, so the
+# window's answer lands at the shell prompt as typed text: "zsh: command not
+# found: 11" from `\e]11;rgb:…` (0.9.17, 2026-10-21 — `claude-squad version`
+# asks for colours and exits without reading, and every later window on that
+# session answered it again). Live output still carries its queries untouched.
+_QUERIES = re.compile(
+    rb"\x1b\][0-9]+(?:;[0-9]+)*;\?(?:\x07|\x1b\\)"   # OSC colour queries: 10/11/12 ;?  and 4;n;?
+    rb"|\x1b\[\??[56]n"                               # DSR: status, cursor position
+    rb"|\x1b\[[>=]?[0-9;]*c"                          # DA1, DA2, DA3: what terminal is this
+    rb"|\x1b\[>[0-9]*q"                               # XTVERSION
+    rb"|\x1b\[\?[0-9;]*\$p"                           # DECRQM: is this mode set
+    rb"|\x1b\[\?u"                                    # kitty keyboard protocol query
+    rb"|\x1b\[(?:1[134689]|2[01])t"                   # window size and title reports
+    rb"|\x1bP\+q[0-9A-Fa-f;]*\x1b\\")                 # XTGETTCAP
+
+
+def without_queries(data: bytes) -> bytes:
+    """A session's recent output fit to replay: everything it drew, minus the
+    questions it asked the terminal."""
+    return _QUERIES.sub(b"", data)
+
 # The service may itself have been launched from an agent session or an IDE,
 # whose ANTHROPIC_* / CLAUDE* variables (base-URL auth proxies, API keys,
 # session markers) would otherwise leak into every shell it hosts — a nested
@@ -1511,7 +1534,7 @@ async def attach(ws: WebSocket, session: str, host: str | None = Query(None)):
         # Joining a live session: show what it last drew, then ask it to draw
         # its screen again, so a REPL waiting at a prompt is not a blank window.
         try:
-            await ws.send_bytes(bytes(live.recent))
+            await ws.send_bytes(without_queries(bytes(live.recent)))
         except Exception:
             pass
     live.clients.add(ws)
