@@ -86,8 +86,12 @@ so a stranger's site cannot claim its way in; it is refreshed every ten
 minutes, and an anchor that does not answer contributes nothing. Sites of
 other people on your farm are still verified by publication, but they are
 trusted — name the ones you do not want under `except`:
-`{"farms": ["https://fab.fish"], "except": ["lena.solidarity.quest"]}`. CORS
-and the consent popup follow the same list, per request, so no restart.
+`{"farms": ["https://fab.fish"], "except": ["lena.solidarity.quest"]}`. Or trust
+only the sites one login owns there — `{"farms": [{"anchor": "https://fab.fish",
+"owner": "david"}]}` — which the service reads from the farm's
+`/system/api/farm/sites.json?owner=david` (Farm plugin 0.10.2), so a new site
+of yours is trusted the moment its owner.json says so and nobody else's ever
+is. CORS and the consent popup follow the same list, per request, so no restart.
 
 **Keyboard trust — the person consents.** A request from a non-local
 origin (the public page itself, opened in a browser on this machine) also

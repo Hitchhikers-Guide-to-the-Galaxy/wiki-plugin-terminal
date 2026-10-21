@@ -420,9 +420,11 @@ def _local_host(host: str) -> bool:
 # global; it cannot write ~/.config).
 #
 #   ~/.config/wiki-plugin-terminal/trust.json
-#   { "sites": ["plan.ide.earth"], "farms": ["https://fab.fish"], "except": [],
-#     "keys": {}, "verify_local": false }
+#   { "sites": ["plan.ide.earth"], "farms": [{"anchor": "https://fab.fish", "owner": "david"}],
+#     "except": [], "keys": {}, "verify_local": false }
 #
+# A farm entry with an `owner` trusts only the sites that login owns on the
+# farm (the farm's sites.json, Farm plugin >= 0.10.2); a plain URL trusts them all.
 # `farms` is the farm default: every site a listed farm ANCHOR publishes under
 # x-fedwiki-farm.sites at /system/api.json is trusted as if it were in `sites`.
 # The anchor is a site of your own farm, so the list is your box's word, not
@@ -437,6 +439,7 @@ TRUST_PATH = os.path.expanduser(
     os.environ.get("WIKI_TERMINAL_TRUST", "~/.config/wiki-plugin-terminal/trust.json")
 )
 SITE_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
+OWNER_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$", re.I)
 SLUG_NAME = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 ITEM_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 PAGE_FETCH_TIMEOUT = 5.0
@@ -474,18 +477,26 @@ class TrustStore:
         raw = self.load().get("sites", [])
         return {str(x).lower() for x in raw if isinstance(x, str) and SITE_NAME.match(str(x).lower())}
 
-    def farms(self) -> list[str]:
-        """Farm anchors: https URLs (a bare host is taken as https://host)."""
+    def farms(self) -> list[dict]:
+        """Farm anchors: each {anchor, owner}. An entry is an https URL (a bare
+        host is taken as https://host) for the whole farm, or an object
+        {"anchor": url, "owner": id} for the sites that id owns on it."""
         out = []
         for x in self.load().get("farms", []):
+            owner = None
+            if isinstance(x, dict):
+                owner = str(x.get("owner") or "").strip() or None
+                x = x.get("anchor")
             if not isinstance(x, str):
                 continue
             x = x.strip().rstrip("/")
             if not x.startswith("https://"):
                 x = "https://" + x
             host = x[len("https://"):].split("/")[0].lower()
+            if owner is not None and not OWNER_ID.match(owner):
+                continue
             if SITE_NAME.match(host) and not _private_address(host):
-                out.append("https://" + host)
+                out.append({"anchor": "https://" + host, "owner": owner})
         return out
 
     def excepted(self) -> set[str]:
@@ -532,31 +543,38 @@ _farm_cache: dict[str, tuple[float, set[str]]] = {}
 _farm_lock = threading.Lock()
 
 
-def farm_sites(anchor: str) -> set[str]:
-    """The sites a farm anchor publishes, cached; an anchor that cannot be
-    read (or answers without a farm block) contributes nothing."""
+def farm_sites(anchor: str, owner: str | None = None) -> set[str]:
+    """The sites a farm anchor publishes — all of them from x-fedwiki-farm.sites,
+    or, with an owner, only that login's sites from the farm's sites.json
+    (Farm plugin >= 0.10.2). Cached; an anchor that cannot be read (or answers
+    without the block) contributes nothing."""
+    key = f"{anchor}|{owner or ''}"
     now = time.monotonic()
     with _farm_lock:
-        hit = _farm_cache.get(anchor)
+        hit = _farm_cache.get(key)
         if hit and now - hit[0] < FARM_CACHE_TTL:
             return hit[1]
     sites: set[str] = set()
     try:
-        api = fetch_json(anchor + "/system/api.json")
-        raw = (api.get("x-fedwiki-farm") or {}).get("sites") or []
+        if owner:
+            api = fetch_json(anchor + "/system/api/farm/sites.json?owner=" + urllib.parse.quote(owner))
+            raw = api.get("sites") or []
+        else:
+            api = fetch_json(anchor + "/system/api.json")
+            raw = (api.get("x-fedwiki-farm") or {}).get("sites") or []
         sites = {str(x).lower() for x in raw if isinstance(x, str) and SITE_NAME.match(str(x).lower())}
     except (urllib.error.URLError, ValueError, OSError, TimeoutError, AttributeError) as e:
         print(f"caution: farm anchor {anchor}: {e}")
     with _farm_lock:
-        _farm_cache[anchor] = (now, sites)
+        _farm_cache[key] = (now, sites)
     return sites
 
 
 def trusted_sites() -> set[str]:
-    """Listed sites plus every site of every trusted farm, minus the exceptions."""
+    """Listed sites plus every site of every trusted farm (or of its named owner), minus the exceptions."""
     sites = set(trust.sites())
-    for anchor in trust.farms():
-        sites |= farm_sites(anchor)
+    for farm in trust.farms():
+        sites |= farm_sites(farm["anchor"], farm["owner"])
     return {s for s in sites - trust.excepted() if not _private_address(s)}
 
 
