@@ -479,3 +479,11 @@ test('a resolved service base is used by later calls; an explicit local service 
   setServiceBase(null)
   assert.equal(serviceBase({}, 'https:'), 'https://terminal.localhost')
 })
+
+test('PAGE is a run whose output is a page', () => {
+  const o = parseDirectives('PAGE\n~/bin/pi5-disk-report --page')
+  assert.equal(o.run, true)
+  assert.equal(o.page, true)
+  assert.equal(o.script, '~/bin/pi5-disk-report --page')
+  assert.equal(parseDirectives('RUN\necho hi').page, undefined)
+})

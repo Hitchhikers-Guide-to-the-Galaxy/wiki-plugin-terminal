@@ -55,6 +55,10 @@ Legacy `shell` items can be redirected to this plugin via wiki-client's
 `"supersedes": ["shell"]` field proposing that the server aggregate
 succession declarations from plugins into `/system/factories.json`.
 
+## PAGE: a run whose output is a page
+
+A `PAGE` directive (it implies `RUN`) treats the run's stdout as page JSON — `{title, story, journal?}` — and opens it as a ghost page beside the page the item is on, the way the Voice Tool and the Plan Tool open theirs. Fork the ghost to save it. A ghost whose title names a page already on the site is written over that page in place; a script that refreshes a report sends the page's existing journal plus one `create` action carrying the new story, so the previous report stays one click back in the journal (wiki-client's revision replay restores a whole story from a `create`), rather than one step per paragraph. `~/bin/pi5-disk-report --page` is the first such script.
+
 ## Security
 
 The pty service is remote code execution by design. It binds to

@@ -23,6 +23,7 @@
 // renders as a code-style display only. When reachable (local-first), a
 // toolbar offers:
 //   run      — POST /terminal/run, capture {stdout, stderr, exit} inline
+//   PAGE     — a run whose stdout is page JSON, opened as a ghost to fork
 //   terminal — attach an interactive xterm to the pty session, in the item
 //   send     — send the script to the attached terminal
 //   zoom     — expand the item to a full-window overlay (esc restores)
@@ -315,10 +316,51 @@ const run = async ($item, script, base, host, session, ctx, item) => {
     if (ctx && (!ctx.isLocalPage || !ctx.isLocalOrigin)) { body.page = ctx.ref; body.source = item ? item.text : undefined }
     if (item && item.signature) { body.signature = item.signature; body.source = item.text }
     const res = await post(base, '/terminal/run', body, ctx)
-    renderReply($item, await res.json())
+    const data = await res.json()
+    renderReply($item, data)
+    return data
   } catch (err) {
     renderReply($item, { stdout: '', stderr: String(err), exit: -1 })
+    return null
   }
+}
+
+// PAGE: the run's stdout is a page. Open it as a ghost beside the item's page,
+// the way the Voice Tool and the Plan Tool open theirs (wiki.newPage +
+// wiki.showResult). The script decides the journal: a report that refreshes
+// an existing page sends that page's journal plus one `create` carrying the new
+// story, so wiki-client's revision replay gives the previous report back whole
+// at the entry before — one click in the journal, not one per paragraph.
+//
+// The ghost's fork flag is taken over (capturing listener, as the Plan Tool's
+// guardGhost does) so the fork names this site and the lineup reloads with the
+// saved page in place of the ghost; wiki-server's push path writes forkPage —
+// story and journal as sent — over any page of the same slug.
+const openPageGhost = ($item, data) => {
+  if (!data || data.exit !== 0) return
+  let page
+  try { page = JSON.parse(String(data.stdout || '').trim()) } catch { return renderReply($item, { ...data, stderr: 'PAGE: stdout is not JSON' }) }
+  if (!page || typeof page.title !== 'string' || !Array.isArray(page.story)) return renderReply($item, { ...data, stderr: 'PAGE: stdout is not a page ({title, story})' })
+  const now = Date.now()
+  if (!Array.isArray(page.journal) || !page.journal.length) page.journal = [{ type: 'create', item: { title: page.title, story: page.story.map(i => ({ ...i })) }, date: now }]
+  const $from = $item.closest('.page')
+  wiki.showResult(wiki.newPage(page), { $page: $from })
+  const $ghost = $from.nextAll('.page').first()
+  const el = $ghost[0]
+  if (!el) return
+  $item.find('.terminal-reply').html(`<span class="exit">page opened as a ghost: <b>${page.title.replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]))}</b> — fork it to save</span>`)
+  el.addEventListener('click', e => {
+    const flag = e.target.closest && e.target.closest('.fork-page')
+    if (!flag || !el.contains(flag)) return
+    e.stopImmediatePropagation(); e.preventDefault()
+    const done = () => { $(document).off('ajaxComplete', handler); clearTimeout(fallback); window.location.reload() }
+    const handler = (ev, xhr, settings) => (settings.url || '').includes('/action') && done()
+    const fallback = setTimeout(done, 5000)
+    $(document).on('ajaxComplete', handler)
+    wiki.pageHandler.put($ghost, { type: 'fork', site: window.location.host, date: Date.now() })
+  }, true)
+  $ghost.find('h1 .title').removeAttr('contenteditable')
+  $ghost.find('.fork-page').attr('title', `Save ${page.title} here: a page of that name is replaced in place, its journal kept`)
 }
 
 // Workflow runner: how wiki-plugin-termflow runs a `terminal` step. It executes
@@ -785,7 +827,8 @@ const bind = async ($item, item) => {
   $tools.find('.t-run').on('click', async () => {
     const session = sessionName(item, opts.session)
     await resolveNeeds(base, session, opts.needs, $box)
-    run($item, scriptFor($box, script, opts.needs), base, opts.host, session)
+    const data = await run($item, scriptFor($box, script, opts.needs), base, opts.host, session)
+    if (opts.page) openPageGhost($item, data)
   })
 
   // terminal — toggle the live area. Opening attaches (once) and pastes the

@@ -120,6 +120,9 @@ export const originTrust = (originSite, isMirror, trustedAuthors) => {
 //   HOST: pi5.local     run through ssh on this host instead of the local shell
 //                       (SSH: user@host accepted) — the local pty ssh's out with
 //                       the viewer's own key; the service allowlists the host
+//   PAGE                run button whose stdout is page JSON, opened as a ghost
+//                       page beside this one; fork saves it (over a same-titled
+//                       page in place, journal kept). Implies RUN.
 //   RUN                 show the one-shot run button (off by default — scripts
 //                       that prompt, e.g. sudo, need the live terminal's pty)
 //   BUTTON              render the item as a text button: the script pane is
@@ -147,6 +150,12 @@ export const originTrust = (originSite, isMirror, trustedAuthors) => {
 // case-sensitive uppercase, per the convention.
 const DIRECTIVE = /^(COLOR|COLOUR|THEME|SCHEME|HEIGHT|FONT|SIZE|SESSION|HOST|SSH|LABEL|BOOT|GUARD|GUARDLABEL)[:\s]\s*(\S.*)$/
 const FLAG = /^RUN:?\s*$/
+// PAGE: the run's stdout is page JSON ({title, story, journal?}); show it as a
+// ghost page beside this one. Fork it to save: a ghost whose title is a page
+// already here is written over that page in place, and a journal the script
+// carries over (the old journal plus one create) keeps the previous version
+// one click back. Implies RUN.
+const PAGE_FLAG = /^PAGE:?\s*$/
 const BUTTON_FLAG = /^BUTTON(?::\s*(\S+))?\s*$/
 
 // ── NEEDS — declared context variables ───────────────────────────────────────
@@ -228,6 +237,7 @@ export const parseDirectives = text => {
   let i = 0
   for (; i < lines.length; i++) {
     if (lines[i].match(FLAG)) { opts.run = true; continue }
+    if (lines[i].match(PAGE_FLAG)) { opts.run = true; opts.page = true; continue }
     const b = lines[i].match(BUTTON_FLAG)
     if (b) {
       opts.button = true
