@@ -99,6 +99,32 @@ preexec() { print -n "\e]133;C\a" }
 [ -f "$ZDOTDIR/.needs" ] && source "$ZDOTDIR/.needs"
 """
 
+# A session shell is a LOGIN shell, like a Terminal.app window, so the user's
+# login files run too. ZDOTDIR points zsh at the session folder, so each of
+# those files there just hands on to the user's own.
+ZSH_HANDOFFS = {
+    ".zshenv": '[ -f ~/.zshenv ] && source ~/.zshenv\n',
+    ".zprofile": '[ -f ~/.zprofile ] && source ~/.zprofile\n',
+    ".zlogin": '[ -f ~/.zlogin ] && source ~/.zlogin\n',
+}
+
+# Every shell starts from the system PATH, as a fresh Terminal window does,
+# and builds the rest from /etc/zprofile and the user's own files. It never
+# inherits this service's PATH. That PATH depends on who restarted the
+# service: on 21 October 2026 a restart from an agent's stripped PATH put
+# Node 18 and an old nvm `claude` first, so every BUTTON's BOOT crashed
+# ("Object not disposable") and its brief fell into zsh.
+FRESH_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+
+
+def fresh_env() -> dict:
+    """The environment a fresh Terminal window starts from: this service's
+    variables without launcher ones (see scrub_launcher_env), PATH reset."""
+    env = scrub_launcher_env()
+    env["PATH"] = FRESH_PATH
+    env.pop("ZDOTDIR", None)
+    return env
+
 # ── NEEDS resolution ──────────────────────────────────────────────────────────
 #
 # A wiki page may NAME a credential; it may never describe how to fetch one.
@@ -173,6 +199,9 @@ def session_dir(session: str) -> str:
     os.makedirs(path, mode=0o700, exist_ok=True)
     with open(os.path.join(path, ".zshrc"), "w") as f:
         f.write(ZSHRC_HOOKS)
+    for name, text in ZSH_HANDOFFS.items():
+        with open(os.path.join(path, name), "w") as f:
+            f.write(text)
     return path
 
 
@@ -274,18 +303,19 @@ def scrub_launcher_env() -> dict:
 # has never seen ~/.zshrc, where the user's own directories join the PATH.
 # The live pane is an interactive zsh and has them, so the same command line
 # worked there and failed on the RUN button ("command not found: wiki-plugman",
-# 3 September 2026). Ask an interactive zsh once what PATH it would have and
-# give every run that; it is cached, because starting one costs about a second.
+# 3 September 2026). Ask a login, interactive zsh, started from a fresh PATH
+# like a Terminal window, once what PATH it would have and give every run
+# that; it is cached, because starting one costs about a second.
 _interactive_path: str | None = None
 
 
 def interactive_env() -> dict:
     global _interactive_path
-    env = scrub_launcher_env()
+    env = fresh_env()
     if _interactive_path is None:
         try:
             out = subprocess.run(
-                ["zsh", "-ic", "print -r -- $PATH"],
+                ["zsh", "-lic", "print -r -- $PATH"],
                 capture_output=True, text=True, timeout=15, env=env,
             ).stdout.strip().splitlines()
             _interactive_path = out[-1].strip() if out else ""
@@ -316,7 +346,9 @@ class Session:
                 # password prompt. The remote shell won't source our OSC-133
                 # hooks, so per-command capture is local-shell only.
                 os.execvp("ssh", ["ssh", "-tt", "-o", "BatchMode=yes", ssh_target])
-            os.execvp("zsh", ["zsh"])
+            # A login shell from the system PATH, as a Terminal window starts.
+            os.environ["PATH"] = FRESH_PATH
+            os.execv("/bin/zsh", ["zsh", "-l"])
 
         self.name, self.pid, self.fd = name, pid, fd
         self.clients: set[WebSocket] = set()
