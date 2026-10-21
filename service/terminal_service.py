@@ -839,6 +839,25 @@ def boot_of(source: str) -> str | None:
     return None
 
 
+_HOST_LINE = re.compile(r"^(?:HOST|SSH)[:\s]\s*(\S.*)$")
+_BUTTON_LINE = re.compile(r"^BUTTON(?::\s*\S+)?\s*$")
+
+
+def host_of(source: str | None) -> str | None:
+    """The HOST (or SSH) directive of a verified item source: where its session
+    runs. Read from the source, never from the asking page."""
+    for line in (source or "").split("\n"):
+        m = _HOST_LINE.match(line)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def is_button(source: str | None) -> bool:
+    """True when a verified item source is a BUTTON item."""
+    return any(_BUTTON_LINE.match(line) for line in (source or "").split("\n"))
+
+
 def guard_of(source: str) -> str | None:
     for line in (source or "").split("\n"):
         if line.startswith("GUARD:"):
@@ -1315,14 +1334,32 @@ async def paste(req: PasteRequest, request: Request):
         return JSONResponse({"ok": False, "error": "bad session name"}, status_code=400)
     boot = boot_of(req.source) if req.boot and req.source is not None else None
     live = sessions.get(req.session)
-    booted = False
+    booted = fresh = False
     if live is None:
-        if not boot:
+        # A verified BUTTON makes its own session (0.9.16, David 2026-10-21:
+        # "the button should run the code" — before, a BUTTON with no BOOT
+        # raced the panel's websocket, found no session, and only a second
+        # click ran). The session is the one the item names, on the host its
+        # verified HOST line names, exactly as the panel would have made it.
+        if not (boot or is_button(req.source)):
             return JSONResponse({"ok": False, "error": "no such live session — open the terminal first"},
                                 status_code=409)
-        live = sessions[req.session] = Session(req.session)
-    if boot:
-        await _until(lambda: live.ready, 10)  # the shell's first prompt, or a REPL already running
+        host = host_of(req.source)
+        target = resolve_ssh_target(host) if host else None
+        if host and target is None:
+            return JSONResponse({"ok": False, "error": f"host {host} is not allowed"}, status_code=403)
+        live = sessions[req.session] = Session(req.session, target)
+        fresh = True
+    if boot or fresh or not live.ready:
+        # the shell's first prompt (bracketed paste switched on), or a REPL
+        # already running; ssh to a Pi takes longer than a local zsh
+        await _until(lambda: live.ready, 20)
+        if fresh and not live.ready:
+            return JSONResponse({"ok": False, "session": req.session,
+                                 "error": "the shell did not draw a prompt — open the session and look"},
+                                status_code=409)
+        if fresh and not boot:
+            await _quiet(live, 0.3, 3)  # the prompt fully drawn before the paste lands
     if boot and live.shell_idle():
         live.write(boot + "\r")
         if not await _until(lambda: not live.shell_idle(), 20):

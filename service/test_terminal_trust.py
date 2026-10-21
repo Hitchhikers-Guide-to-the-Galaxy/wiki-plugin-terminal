@@ -381,6 +381,39 @@ def test_paste_boots_the_session_then_pastes_whole(client, monkeypatch, tmp_path
             t.sessions.pop(name).close()
 
 
+def test_button_without_boot_runs_on_first_paste(client, monkeypatch, tmp_path):
+    # 0.9.16: a verified BUTTON with no BOOT makes its session, waits for the
+    # prompt, and runs — one click, no panel needed first
+    out = tmp_path / "ran.txt"
+    script = f"echo first-click > {out}"
+    source = f"BUTTON: show\nLABEL: Check\nSESSION: first-click-session\n{script}"
+    page = {"story": [{"type": "terminal", "id": "abc", "text": source}]}
+    monkeypatch.setattr(t, "fetch_page", lambda url: page)
+    name = "first-click-session"
+    try:
+        r = client.post("/terminal/paste", json={"session": name, "text": script, "page": REF, "source": source},
+                        headers={"Origin": LOCAL})
+        assert r.status_code == 200, r.text
+        assert r.json()["ok"] and not r.json()["booted"]
+        deadline = time.time() + 10
+        while time.time() < deadline and not out.exists():
+            time.sleep(0.1)
+        assert out.read_text().strip() == "first-click"
+    finally:
+        if name in t.sessions:
+            t.sessions.pop(name).close()
+
+
+def test_button_session_refuses_a_host_not_allowed(client, monkeypatch):
+    source = "BUTTON: show\nHOST: evil.example\necho hi"
+    page = {"story": [{"type": "terminal", "id": "abc", "text": source}]}
+    monkeypatch.setattr(t, "fetch_page", lambda url: page)
+    r = client.post("/terminal/paste", json={"session": "host-test", "text": "echo hi", "page": REF, "source": source},
+                    headers={"Origin": LOCAL})
+    assert r.status_code == 403
+    assert "host-test" not in t.sessions
+
+
 def test_paste_never_boots_from_the_askers_word(client, published):
     # boot asked for, but the verified source has no BOOT: no session is made
     r = client.post("/terminal/paste", json={"session": "s2", "text": "echo published", "page": REF, "source": SOURCE, "boot": True},

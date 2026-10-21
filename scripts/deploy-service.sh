@@ -45,7 +45,17 @@ echo "deployed $DST (ssh hosts: ${LOCAL_HOSTS:-package default})"
 PORT=4244
 pkill -f "uvicorn main:app.*--port $PORT" 2>/dev/null || true
 sleep 1
-UV="$(command -v uvicorn || true)"; [ -z "$UV" ] && UV="$HOME/.pyenv/shims/uvicorn"
+# The first uvicorn whose Python can import fastapi: a framework Python on the
+# login PATH may carry uvicorn without fastapi (2026-10-21), so PATH order alone
+# is not enough. The pyenv shim, the one the Farm API was built on, comes first.
+UV=""
+for cand in "$HOME/.pyenv/shims/uvicorn" $(which -a uvicorn 2>/dev/null); do
+  [ -x "$cand" ] || continue
+  py="$(head -1 "$cand" | sed 's/^#!//')"
+  case "$cand" in */.pyenv/shims/*) py="$HOME/.pyenv/shims/python3" ;; esac
+  if "$py" -c 'import fastapi' 2>/dev/null; then UV="$cand"; break; fi
+done
+[ -z "$UV" ] && { echo "no uvicorn with fastapi found" >&2; exit 1; }
 LOG="$HOME/Library/Logs/wiki-farm-api.log"
 echo "=== deploy-service $(date '+%Y-%m-%d %H:%M:%S') — restarting Farm API on $PORT ===" >> "$LOG"
 ( cd "$API_DIR" && exec /usr/bin/nohup "$UV" main:app --port "$PORT" >> "$LOG" 2>&1 ) &
