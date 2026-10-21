@@ -630,6 +630,10 @@ export const STYLE = `
     border-radius:6px; border:1px solid #ffb000; background:#fff8e6;
     color:#7a5800; cursor:pointer }
   .terminal-item .t-go:hover:not(:disabled) { background:#ffefc2 }
+  .terminal-item .t-go-tab { font:13px/1.4 sans-serif; padding:6px 10px; margin-left:6px;
+    border-radius:6px; border:1px solid #c9c9c9; background:#fafafa; color:#444; cursor:pointer }
+  .terminal-item .t-go-tab:hover:not(:disabled) { background:#eef4ff; border-color:#9ab }
+  .terminal-item .t-go-tab:disabled { opacity:.45; cursor:default }
   .terminal-item .t-go:disabled { opacity:.45; cursor:default }
   .terminal-item .t-go.t-go-sent { background:#e7f6f0; border-color:#0a7d5a;
     color:#0a7d5a }

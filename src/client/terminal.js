@@ -137,6 +137,40 @@ const grantOf = base => {
     return g.token
   } catch { return null }
 }
+const forgetGrant = base => { try { sessionStorage.removeItem(grantKey(base)) } catch {} }
+
+// A grant held in this tab can be dead while it still looks current: the service
+// mints a fresh secret each time it starts (and on Lock everything), voiding every
+// grant it gave. /terminal/health answers `locked` for the bearer it is sent, so
+// ask it before trusting what is held. A dead grant is dropped and the toolbars
+// told, so the next click opens Unlock inside the click, where pop-ups are allowed.
+const grantChecks = new Map()
+const checkGrant = base => {
+  if (!grantOf(base)) return Promise.resolve(false)
+  const key = serviceOrigin(base)
+  const hit = grantChecks.get(key)
+  if (hit && Date.now() - hit.at < 5000) return hit.p
+  const p = (async () => {
+    try {
+      const res = await fetch(`${base}/terminal/health`, { headers: authHeaders(base), signal: AbortSignal.timeout(3000) })
+      const j = await res.json()
+      if (j.locked) {
+        forgetGrant(base)
+        window.dispatchEvent(new CustomEvent('wiki-terminal-locked', { detail: { base } }))
+        return false
+      }
+      return true
+    } catch { return Boolean(grantOf(base)) }
+  })()
+  grantChecks.set(key, { at: Date.now(), p })
+  return p
+}
+
+// The session's own full-screen page, served by this machine's terminal service:
+// it needs no grant, so it works even while the wiki's panel is waiting for one.
+const openSessionTab = (base, name) =>
+  window.open(`${base}/terminal/page?session=${encodeURIComponent(name)}`, `wiki-terminal-${name}`)
+
 const authHeaders = base => {
   const token = grantOf(base)
   return token ? { Authorization: `Bearer ${token}` } : {}
@@ -172,10 +206,13 @@ const post = async (base, path, body, ctx) => {
   })
   let res = await send()
   if (res.status === 401 && ctx && !ctx.isLocalOrigin) {
+    forgetGrant(base)
     if (await unlock(base)) {
-      res = await send()
-      // Every toolbar on the page wears the lock state: tell them it lifted.
+      // Every toolbar on the page wears the lock state: tell them it lifted —
+      // before the retry, so an open terminal rejoins its session while a slow
+      // request (a BOOT that waits for its REPL) is still on its way.
       window.dispatchEvent(new CustomEvent('wiki-terminal-unlocked', { detail: { base } }))
+      res = await send()
     }
   }
   return res
@@ -198,7 +235,8 @@ const emit = ($item, item) => {
     <div class="terminal-item${buttonMode ? ' term-button-mode' : ''}">
       <pre class="terminal-script hljs"><code class="hljs language-bash">${applyNeeds(highlightScript(script), needs, trust)}</code></pre>
       ${buttonMode ? `<div class="terminal-go"><button class="t-go" disabled
-        title="terminal service unreachable — display only">${expand(buttonLabel(opts))}</button></div>` : ''}
+        title="terminal service unreachable — display only">${expand(buttonLabel(opts))}</button><button class="t-go-tab" disabled
+        title="open the session full-screen in a new tab">↗ open in tab</button></div>` : ''}
       <div class="terminal-tools"></div>
       <div class="terminal-needs-hint"></div>
       <div class="wf-lock-hint"></div>
@@ -476,8 +514,25 @@ const attach = ($item, item, base, opts = {}) => {
     scan(text)
   }
   socket.onopen = () => refit()
-  socket.onclose = () => term.write(
-    '\r\n\x1b[2m[session ended — close and reopen the terminal for a fresh shell]\x1b[0m\r\n')
+  // 4401: the service refused the grant this window was opened with (a restart
+  // voids every grant). The session itself is fine, so say what is wanted and
+  // join it again, by itself, as soon as a fresh grant arrives.
+  const rejoin = event => {
+    if (!event.detail || serviceOrigin(event.detail.base) !== serviceOrigin(base)) return
+    window.removeEventListener('wiki-terminal-unlocked', rejoin)
+    if (socket.readyState !== WebSocket.CLOSED || !document.contains(host)) return
+    const again = attach($item, item, base, opts)
+    requestAnimationFrame(() => again.refit())
+  }
+  socket.onclose = event => {
+    if (event.code === 4401) {
+      forgetGrant(base)
+      window.addEventListener('wiki-terminal-unlocked', rejoin)
+      term.write('\r\n\x1b[2m[this machine needs your OK for this page — allow it in the window that opens; this view joins the session again by itself]\x1b[0m\r\n')
+      return
+    }
+    term.write('\r\n\x1b[2m[session ended — close and reopen the terminal for a fresh shell]\x1b[0m\r\n')
+  }
 
   term.onData(data => socket.send(JSON.stringify({ type: 'input', data })))
   term.onResize(({ cols, rows }) => {
@@ -619,7 +674,7 @@ const bind = async ($item, item) => {
     // 2026-10-20): draw the button now that the page is known to be trusted.
     if (opts.button && !$box.find('.t-go').length) {
       $box.addClass('term-button-mode').find('.terminal-script').after(
-        `<div class="terminal-go"><button class="t-go" disabled title="checking…">${expand(buttonLabel(opts))}</button></div>`)
+        `<div class="terminal-go"><button class="t-go" disabled title="checking…">${expand(buttonLabel(opts))}</button><button class="t-go-tab" disabled title="open the session full-screen in a new tab">↗ open in tab</button></div>`)
     }
     $tools.html(`
       <span class="t-status">
@@ -726,8 +781,12 @@ const bind = async ($item, item) => {
         }
       })
       $item.find('.t-enter').on('click', () => attach($item, item, base, opts).send('\r'))
-      $item.find('.t-tab-remote').on('click', () =>
-        window.open(`${base}/terminal/page?session=${encodeURIComponent(name)}`, `wiki-terminal-${name}`))
+      $item.find('.t-tab-remote').on('click', () => openSessionTab(base, name))
+      $box.find('.t-go-tab').prop('disabled', false).off('click').on('click', () => openSessionTab(base, name))
+      if (!ctx.isLocalOrigin) {
+        checkGrant(base)
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkGrant(base) })
+      }
 
       const ready = () => $go.prop('disabled', false).data('busy', false).removeClass('t-go-sent').text(buttonLabel(opts))
       $go.prop('disabled', false).attr('title', `run in session ${name} on this machine${opts.boot ? `, starting ${expand(opts.boot)} first if it is not running` : ''}` +
@@ -888,6 +947,8 @@ const bind = async ($item, item) => {
   if (opts.button) {
     const $go = $box.find('.t-go')
     const label = $go.text()
+    $box.find('.t-go-tab').prop('disabled', false).off('click')
+      .on('click', () => openSessionTab(base, sessionName(item, opts.session)))
     // A button's script belongs to the CLICK: opening the terminal view is
     // just a window onto the session, never a paste (a REPL mid-boot must not
     // be fed the prompt early, and a watcher expects to watch, not to type).
