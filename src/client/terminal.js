@@ -559,6 +559,13 @@ const bind = async ($item, item) => {
     const $tools = $item.find('.terminal-tools').addClass('t-bar t-trust')
     const site = expand(ctx.site)
     const origin = expand(window.location.origin)
+    // emit drew this item before the trust list came back, so a BUTTON on a
+    // trusted remote page was drawn as plain script (arena.solidarity.quest,
+    // 2026-10-20): draw the button now that the page is known to be trusted.
+    if (opts.button && !$box.find('.t-go').length) {
+      $box.addClass('term-button-mode').find('.terminal-script').after(
+        `<div class="terminal-go"><button class="t-go" disabled title="checking…">${expand(buttonLabel(opts))}</button></div>`)
+    }
     $tools.html(`
       <span class="t-status">
         <span class="t-verify" title="checking with ${site}…">verifying…</span>
@@ -566,7 +573,7 @@ const bind = async ($item, item) => {
       </span>
       <span class="t-actions">
         ${opts.guard ? `<button class="t-check" title="run the GUARD test: ${expand(opts.guard)}">check</button>` : ''}
-        <button class="t-run-remote" title="run this script, as ${site} publishes it, on your own machine">${ICONS.play} run</button>
+        ${opts.button ? '' : `<button class="t-run-remote" title="run this script, as ${site} publishes it, on your own machine">${ICONS.play} run</button>`}
       </span>
     `)
     const $verify = $tools.find('.t-verify')
@@ -625,18 +632,27 @@ const bind = async ($item, item) => {
     })
     // BUTTON on a trusted page: the click sends the verified script into a
     // live session on this machine through the service, never the raw socket.
+    // With BOOT the service starts the session's REPL first (the BOOT line it
+    // reads from the verified page, not from this click) and pastes only once
+    // the REPL holds the terminal: a brief pasted into a bare zsh is parsed as
+    // a command line. BUTTON: show opens the session's own page to watch, in
+    // the click, so no popup blocker stands in the way.
     if (opts.button) {
       const $go = $box.find('.t-go')
-      $go.prop('disabled', false).attr('title', `send to session ${sessionName(item, opts.session)} on this machine`)
+      const name = sessionName(item, opts.session)
+      $go.prop('disabled', false).attr('title', `send to session ${name} on this machine${opts.boot ? `, starting ${expand(opts.boot)} first if it is not running` : ''}`)
       $go.on('click', async () => {
-        $go.prop('disabled', true)
+        if ($go.data('busy')) return
+        $go.data('busy', true).prop('disabled', true)
+        if (opts.buttonShow) window.open(`${base}/terminal/page?session=${encodeURIComponent(name)}`, `wiki-terminal-${name}`)
+        $go.text(opts.boot ? 'starting…' : 'sending…')
         try {
           const res = await post(base, '/terminal/paste',
-            { session: sessionName(item, opts.session), text: script, page: ctx.ref, source: item.text, signature: item.signature || undefined }, ctx)
+            { session: name, text: script, page: ctx.ref, source: item.text, signature: item.signature || undefined, boot: Boolean(opts.boot) }, ctx)
           const j = await res.json()
           $go.text(j.ok ? 'sent ✓' : (j.error || 'refused')).toggleClass('t-go-sent', Boolean(j.ok))
         } catch (err) { $go.text(String(err)) }
-        setTimeout(() => $go.prop('disabled', false).removeClass('t-go-sent').text(buttonLabel(opts)), 2500)
+        setTimeout(() => $go.prop('disabled', false).data('busy', false).removeClass('t-go-sent').text(buttonLabel(opts)), 4000)
       })
     }
     return
