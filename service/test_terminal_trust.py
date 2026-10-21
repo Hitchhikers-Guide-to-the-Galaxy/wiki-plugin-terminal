@@ -387,3 +387,25 @@ def test_paste_never_boots_from_the_askers_word(client, published):
                     headers={"Origin": LOCAL})
     assert r.status_code == 409
     assert "s2" not in t.sessions
+
+
+# ── a window opened on a live session sees what it last drew ─────────────────
+
+def test_attach_replays_recent_output(client):
+    name = "replay-test-session"
+    try:
+        with client.websocket_connect(f"/terminal/pty/{name}", headers={"Origin": LOCAL}) as ws:
+            deadline = time.time() + 10
+            while time.time() < deadline and not t.sessions[name].ready:
+                time.sleep(0.1)
+            ws.send_text(json.dumps({"type": "input", "data": "echo replay-marker-$((40+2))\r"}))
+            deadline = time.time() + 5
+            while time.time() < deadline and b"replay-marker-42" not in bytes(t.sessions[name].recent):
+                time.sleep(0.1)
+        assert b"replay-marker-42" in bytes(t.sessions[name].recent)
+        with client.websocket_connect(f"/terminal/pty/{name}", headers={"Origin": LOCAL}) as ws:
+            first = ws.receive_bytes()
+            assert b"replay-marker-42" in first
+    finally:
+        if name in t.sessions:
+            t.sessions.pop(name).close()

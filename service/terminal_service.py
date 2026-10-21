@@ -254,6 +254,7 @@ def resolve_needs(session: str, needs: list) -> dict:
     }
 
 sessions: dict[str, "Session"] = {}
+REPLAY_BYTES = 256 * 1024  # how much of a session's recent output a new window is shown
 
 # The service may itself have been launched from an agent session or an IDE,
 # whose ANTHROPIC_* / CLAUDE* variables (base-URL auth proxies, API keys,
@@ -326,6 +327,10 @@ class Session:
         # mistaken for a booted REPL.
         self.ready = False
         self._probe = b""
+        # The last of the session's output, for whoever attaches next: a window
+        # opened on a live session showed nothing until something new was drawn,
+        # and a REPL waiting at a prompt draws nothing (2026-10-21).
+        self.recent = bytearray()
         asyncio.get_event_loop().add_reader(self.fd, self._pump)
 
     def _pump(self):
@@ -336,6 +341,9 @@ class Session:
         if not data:
             return self.close()
         self.last_output = time.monotonic()
+        self.recent += data
+        if len(self.recent) > REPLAY_BYTES:
+            del self.recent[: len(self.recent) - REPLAY_BYTES]
         if not self.ready:
             self._probe = (self._probe + data)[-4096:]
             if b"\x1b[?2004h" in self._probe:
@@ -364,6 +372,22 @@ class Session:
 
     def resize(self, cols: int, rows: int):
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+    def size(self) -> tuple[int, int]:
+        rows, cols, _, _ = struct.unpack("HHHH", fcntl.ioctl(self.fd, termios.TIOCGWINSZ, b"\0" * 8))
+        return cols, rows
+
+    async def redraw(self):
+        """Make a full-screen program (claude, vim, top) paint its whole screen
+        again: change the size by a row and back, which it hears as SIGWINCH."""
+        try:
+            cols, rows = self.size()
+            if rows > 2:
+                self.resize(cols, rows - 1)
+                await asyncio.sleep(0.15)
+                self.resize(cols, rows)
+        except OSError:
+            pass
 
     def close(self):
         try:
@@ -1388,9 +1412,19 @@ async def attach(ws: WebSocket, session: str, host: str | None = Query(None)):
             await ws.close(code=4401)
             return
     live = sessions.get(session)
+    existing = live is not None
     if live is None:
         live = sessions[session] = Session(session, target)
+    if existing and live.recent:
+        # Joining a live session: show what it last drew, then ask it to draw
+        # its screen again, so a REPL waiting at a prompt is not a blank window.
+        try:
+            await ws.send_bytes(bytes(live.recent))
+        except Exception:
+            pass
     live.clients.add(ws)
+    if existing:
+        asyncio.ensure_future(live.redraw())
     try:
         while True:
             message = json.loads(await ws.receive_text())
