@@ -61,7 +61,7 @@ A `PAGE` directive (it implies `RUN`) treats the run's stdout as page JSON — `
 
 ## TIMEOUT: a longer one-shot run
 
-A run from the toolbar (or a `RUN`/`PAGE` item, or a workflow step) is a one-shot capture, and the service stops it after 30 seconds. An item that needs longer says so in a leading directive: `TIMEOUT: 300`, `TIMEOUT: 300s`, `TIMEOUT: 5m` or `TIMEOUT: 2 min`. The service clamps the ask to its own ceiling, 600 seconds unless `WIKI_TERMINAL_RUN_TIMEOUT_MAX` says otherwise, and the reply names the limit it used and whether the ask was cut down. A page can ask for time; it cannot grant itself any. Work longer than the ceiling belongs in a live session (`BUTTON` with `SESSION`), which has no limit. When a run does time out, the message says which of the two to reach for.
+A run from the toolbar (or a `RUN`/`PAGE` item, or a workflow step) is a one-shot capture, and the service stops it after 30 seconds. An item that needs longer says so in a leading directive: `TIMEOUT: 300`, `TIMEOUT: 300s`, `TIMEOUT: 5m` or `TIMEOUT: 2 min`. The service clamps the ask to its own ceiling, 600 seconds unless `WIKI_TERMINAL_RUN_TIMEOUT_MAX` says otherwise, and the reply names the limit it used and whether the ask was cut down. The client caps the ask at 600 seconds as well, so a page never asks a service older than 0.9.14, which accepts any timeout, for more than a new one would give. A page can ask for time; it cannot grant itself any. Work longer than the ceiling belongs in a live session (`BUTTON` with `SESSION`), which has no limit. When a run does time out, the message says which of the two to reach for.
 
 ## Security
 

@@ -232,12 +232,16 @@ export const parseNeed = (name, spec) => {
 
 // TIMEOUT: how long a one-shot run may take, asked by the item: `300`, `300s`,
 // `5m`, `5 min`. Seconds, a whole number, or undefined when it does not read.
-// The service clamps it to its own ceiling; a page can ask, not grant.
+// The service clamps it to its own ceiling; a page can ask, not grant. The
+// client caps it too, at the same 600 s, because a service older than 0.9.14
+// accepts any `timeout` it is sent: a new page must not ask an old service for
+// more than a new one would give.
+export const RUN_TIMEOUT_CEILING = 600
 export const parseTimeout = value => {
   const m = String(value || '').trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*(s|sec|secs|seconds?|m|min|mins|minutes?)?$/)
   if (!m) return undefined
   const n = parseFloat(m[1]) * (m[2] && m[2].startsWith('m') ? 60 : 1)
-  return n >= 1 ? Math.round(n) : undefined
+  return n >= 1 ? Math.min(Math.round(n), RUN_TIMEOUT_CEILING) : undefined
 }
 
 export const parseDirectives = text => {

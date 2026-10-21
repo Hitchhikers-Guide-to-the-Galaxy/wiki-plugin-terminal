@@ -488,7 +488,7 @@ test('PAGE is a run whose output is a page', () => {
   assert.equal(parseDirectives('RUN\necho hi').page, undefined)
 })
 
-import { parseTimeout } from '../src/client/helpers.js'
+import { parseTimeout, RUN_TIMEOUT_CEILING } from '../src/client/helpers.js'
 
 test('TIMEOUT: an item asks for a longer one-shot run, in seconds or minutes', () => {
   assert.equal(parseTimeout('300'), 300)
@@ -504,4 +504,12 @@ test('TIMEOUT: an item asks for a longer one-shot run, in seconds or minutes', (
   assert.equal(r.script, 'python3 -I tests.py')
   // a line that is not a directive ends the directives: TIMEOUT below the script is script
   assert.equal(parseDirectives('echo hi\nTIMEOUT: 2m').timeout, undefined)
+})
+
+test('TIMEOUT: the client never asks past the ceiling, so an older service (which accepts any timeout) is safe too', () => {
+  assert.equal(RUN_TIMEOUT_CEILING, 600)
+  assert.equal(parseTimeout('600'), 600)
+  assert.equal(parseTimeout('601'), 600)
+  assert.equal(parseTimeout('100000m'), 600)
+  assert.equal(parseDirectives('TIMEOUT: 9999\necho x').timeout, 600)
 })
