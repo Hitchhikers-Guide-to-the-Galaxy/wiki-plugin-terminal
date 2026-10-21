@@ -1,7 +1,7 @@
 {
   "name": "wiki-plugin-terminal",
   "version": "0.9.9",
-  "description": "Federated Wiki plugin — a live shell terminal in the page; successor to wiki-plugin-shell",
+  "description": "Federated Wiki plugin \u2014 a live shell terminal in the page; successor to wiki-plugin-shell",
   "keywords": [
     "wiki",
     "federated wiki",
@@ -22,7 +22,9 @@
     "server",
     "pages",
     "service",
-    "factory.json"
+    "factory.json",
+    "!service/__pycache__",
+    "!**/*.pyc"
   ],
   "repository": {
     "type": "git",
