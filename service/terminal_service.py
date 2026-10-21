@@ -319,6 +319,13 @@ class Session:
 
         self.name, self.pid, self.fd = name, pid, fd
         self.clients: set[WebSocket] = set()
+        self.last_output = time.monotonic()  # for a paste that waits for a REPL to settle
+        # Ready once the line editor has drawn its first prompt and switched
+        # bracketed paste on (\e[?2004h) — the client's own test. Before that a
+        # heavy ~/.zshrc may still be running, and anything typed is lost or
+        # mistaken for a booted REPL.
+        self.ready = False
+        self._probe = b""
         asyncio.get_event_loop().add_reader(self.fd, self._pump)
 
     def _pump(self):
@@ -328,6 +335,11 @@ class Session:
             data = b""
         if not data:
             return self.close()
+        self.last_output = time.monotonic()
+        if not self.ready:
+            self._probe = (self._probe + data)[-4096:]
+            if b"\x1b[?2004h" in self._probe:
+                self.ready, self._probe = True, b""
         for ws in list(self.clients):
             asyncio.ensure_future(self._send(ws, data))
 
@@ -408,7 +420,16 @@ def _local_host(host: str) -> bool:
 # global; it cannot write ~/.config).
 #
 #   ~/.config/wiki-plugin-terminal/trust.json
-#   { "sites": ["plan.ide.earth"], "keys": {}, "verify_local": false }
+#   { "sites": ["plan.ide.earth"], "farms": ["https://fab.fish"], "except": [],
+#     "keys": {}, "verify_local": false }
+#
+# `farms` is the farm default: every site a listed farm ANCHOR publishes under
+# x-fedwiki-farm.sites at /system/api.json is trusted as if it were in `sites`.
+# The anchor is a site of your own farm, so the list is your box's word, not
+# the page's — a stranger's site cannot talk its way in by claiming a farm id.
+# `except` names farm sites you do not trust (other people's sites on your
+# farm). The farm list is refreshed every ten minutes; an unreachable anchor
+# contributes nothing until it answers.
 #
 # `keys` is reserved for signed items (BIP-340, the Terminal Trust Plan's
 # Phase 3): a signature by a listed key passes offline on any site.
@@ -453,6 +474,24 @@ class TrustStore:
         raw = self.load().get("sites", [])
         return {str(x).lower() for x in raw if isinstance(x, str) and SITE_NAME.match(str(x).lower())}
 
+    def farms(self) -> list[str]:
+        """Farm anchors: https URLs (a bare host is taken as https://host)."""
+        out = []
+        for x in self.load().get("farms", []):
+            if not isinstance(x, str):
+                continue
+            x = x.strip().rstrip("/")
+            if not x.startswith("https://"):
+                x = "https://" + x
+            host = x[len("https://"):].split("/")[0].lower()
+            if SITE_NAME.match(host) and not _private_address(host):
+                out.append("https://" + host)
+        return out
+
+    def excepted(self) -> set[str]:
+        raw = self.load().get("except", [])
+        return {str(x).lower() for x in raw if isinstance(x, str)}
+
     def keys(self) -> dict:
         keys = self.load().get("keys", {})
         return keys if isinstance(keys, dict) else {}
@@ -464,6 +503,9 @@ class TrustStore:
         """What a client may know: names, never secrets."""
         return {
             "sites": sorted(self.sites()),
+            "farms": self.farms(),
+            "farm_sites": len(trusted_sites() - self.sites()),
+            "except": sorted(self.excepted()),
             "keys": {k: (v.get("id") if isinstance(v, dict) else None) for k, v in self.keys().items()},
             "verify_local": self.verify_local(),
         }
@@ -482,11 +524,43 @@ def _private_address(host: str) -> bool:
     return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
 
 
+FARM_CACHE_TTL = 600.0
+_farm_cache: dict[str, tuple[float, set[str]]] = {}
+_farm_lock = threading.Lock()
+
+
+def farm_sites(anchor: str) -> set[str]:
+    """The sites a farm anchor publishes, cached; an anchor that cannot be
+    read (or answers without a farm block) contributes nothing."""
+    now = time.monotonic()
+    with _farm_lock:
+        hit = _farm_cache.get(anchor)
+        if hit and now - hit[0] < FARM_CACHE_TTL:
+            return hit[1]
+    sites: set[str] = set()
+    try:
+        api = fetch_json(anchor + "/system/api.json")
+        raw = (api.get("x-fedwiki-farm") or {}).get("sites") or []
+        sites = {str(x).lower() for x in raw if isinstance(x, str) and SITE_NAME.match(str(x).lower())}
+    except (urllib.error.URLError, ValueError, OSError, TimeoutError, AttributeError) as e:
+        print(f"caution: farm anchor {anchor}: {e}")
+    with _farm_lock:
+        _farm_cache[anchor] = (now, sites)
+    return sites
+
+
+def trusted_sites() -> set[str]:
+    """Listed sites plus every site of every trusted farm, minus the exceptions."""
+    sites = set(trust.sites())
+    for anchor in trust.farms():
+        sites |= farm_sites(anchor)
+    return {s for s in sites - trust.excepted() if not _private_address(s)}
+
+
 def site_trusted(site: str | None) -> bool:
     if not site:
         return False
-    site = site.lower()
-    return site in trust.sites() and not _private_address(site)
+    return site.lower() in trusted_sites()
 
 
 def allowed_origin(origin: str | None) -> bool:
@@ -521,8 +595,9 @@ def _fetch_page_raw(url: str) -> dict:
     return json.loads(body.decode("utf-8"))
 
 
-# Test seam: a test replaces fetch_page with a stub.
+# Test seams: a test replaces fetch_page (pages) and fetch_json (farm anchors) with stubs.
 fetch_page = _fetch_page_raw
+fetch_json = _fetch_page_raw
 
 
 def _cached_page(site: str, slug: str, scheme: str) -> dict:
@@ -676,6 +751,15 @@ def script_of(source: str) -> str:
     while i < len(lines) and (not lines[i].strip() or DIRECTIVE_LINE.match(lines[i].strip())):
         i += 1
     return "\n".join(lines[i:])
+
+
+def boot_of(source: str) -> str | None:
+    """The BOOT directive of a (verified) item source: the command that starts
+    the session's REPL. Read from the source, never from the asking page."""
+    for line in (source or "").split("\n"):
+        if line.startswith("BOOT:"):
+            return line[len("BOOT:"):].strip() or None
+    return None
 
 
 def guard_of(source: str) -> str | None:
@@ -1092,24 +1176,67 @@ class PasteRequest(BaseModel):
     source: str | None = None
     signature: Signature | None = None
     enter: bool = True
+    boot: bool = False
+
+
+async def _until(test, seconds: float, step: float = 0.3) -> bool:
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if test():
+            return True
+        await asyncio.sleep(step)
+    return test()
+
+
+async def _quiet(live: "Session", still: float, most: float) -> None:
+    """Wait until the session has drawn nothing for `still` seconds (at most `most`)."""
+    end = time.monotonic() + most
+    while time.monotonic() < end and time.monotonic() - live.last_output < still:
+        await asyncio.sleep(0.1)
 
 
 @router.post("/paste")
-def paste(req: PasteRequest, request: Request):
+async def paste(req: PasteRequest, request: Request):
     """Write a verified script into a named live session — the BUTTON of a page
-    that is not local, without handing that page the raw socket."""
+    that is not local, without handing that page the raw socket.
+
+    With boot (2026-10-20), the BUTTON's BOOT, read from the VERIFIED source,
+    starts the session's REPL first: the session is created when there is none,
+    and BOOT runs when its shell holds the terminal with nothing running. The
+    prompt is pasted only once the REPL has taken the terminal and settled —
+    pasted into a bare zsh, a brief is parsed as a command line ("parse error
+    near `then'"). The text goes as one bracketed paste, so a REPL reads a
+    multi-line brief whole instead of submitting it at the first newline."""
     verdict = gate(request, req.text, req.page, req.source, req.signature)
     if not verdict.ok:
         return JSONResponse({"ok": False, "error": verdict.why, "locked": verdict.locked},
                             status_code=verdict.status)
     if not SESSION_NAME.match(req.session):
         return JSONResponse({"ok": False, "error": "bad session name"}, status_code=400)
+    boot = boot_of(req.source) if req.boot and req.source is not None else None
     live = sessions.get(req.session)
+    booted = False
     if live is None:
-        return JSONResponse({"ok": False, "error": "no such live session — open the terminal first"},
-                            status_code=409)
-    live.write(req.text + ("\r" if req.enter else ""))
-    return {"ok": True, "session": req.session, "verified": {"site": verdict.site, "at": verdict.at}}
+        if not boot:
+            return JSONResponse({"ok": False, "error": "no such live session — open the terminal first"},
+                                status_code=409)
+        live = sessions[req.session] = Session(req.session)
+    if boot:
+        await _until(lambda: live.ready, 10)  # the shell's first prompt, or a REPL already running
+    if boot and live.shell_idle():
+        live.write(boot + "\r")
+        if not await _until(lambda: not live.shell_idle(), 20):
+            return JSONResponse({"ok": False, "booted": False, "session": req.session,
+                                 "error": f"{boot} did not take the terminal — open the session and look"},
+                                status_code=409)
+        await _quiet(live, 1.0, 25)  # its first screen drawn
+        booted = True
+    live.write(f"\x1b[200~{req.text}\x1b[201~")
+    if req.enter:
+        await _quiet(live, 0.35, 2.5)  # a TUI digests a paste before Return means submit
+        live.write("\r")
+    return {"ok": True, "session": req.session, "booted": booted,
+            "verified": {"site": verdict.site, "at": verdict.at}}
 
 
 @router.get("/trust")
@@ -1300,10 +1427,13 @@ app = FastAPI()
 # degrades to display-only. Restrict CORS to local origins (localhost /
 # *.localhost / loopback) so a public page can't drive the pty cross-origin —
 # the loopback bind plus the per-request Origin checks are the real backstop.
-def _cors_regex() -> str:
-    local = r"https?://(([a-z0-9-]+\.)*localhost|127\.0\.0\.1|\[::1\])(:\d+)?"
-    trusted = "|".join("https://" + re.escape(x) for x in sorted(trust.sites()))
-    return f"^({local}{'|' + trusted if trusted else ''})$"
+class TrustCORS(CORSMiddleware):
+    """CORS decided per request by allowed_origin(), so a site added to
+    trust.json or published by a trusted farm is accepted without a restart
+    (the regex form was fixed at import time)."""
+
+    def is_allowed_origin(self, origin: str) -> bool:
+        return allowed_origin(origin)
 
 
 async def private_network_headers(request, call_next):
@@ -1317,8 +1447,8 @@ async def private_network_headers(request, call_next):
 
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origin_regex=_cors_regex(),
+    TrustCORS,
+    allow_origin_regex=r"^$",
     allow_methods=["*"],
     allow_headers=["*"],
     # Starlette >= 0.46 answers the Private/Local Network Access preflight

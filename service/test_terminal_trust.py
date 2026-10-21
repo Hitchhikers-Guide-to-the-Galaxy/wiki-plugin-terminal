@@ -253,3 +253,121 @@ def test_websocket_public_origin_needs_auth_frame(client):
         with client.websocket_connect("/terminal/pty/wsauth", headers={"Origin": PUBLIC}) as ws:
             ws.send_text(json.dumps({"type": "auth", "token": "bogus"}))
             ws.receive_text()
+
+
+# ── farm trust ────────────────────────────────────────────────────────────────
+
+FARM_API = {"x-fedwiki-farm": {"id": "fab.fish", "sites": ["time.solidarity.quest", "lena.solidarity.quest", "10.0.0.5"]}}
+
+
+@pytest.fixture
+def farm(trust_file, monkeypatch):
+    trust_file.write_text(json.dumps({"sites": ["plan.ide.earth"], "farms": ["https://fab.fish"],
+                                      "except": ["lena.solidarity.quest"]}))
+    calls = []
+
+    def fake_json(url):
+        calls.append(url)
+        return FARM_API
+    monkeypatch.setattr(t, "fetch_json", fake_json)
+    t._farm_cache.clear()
+    return calls
+
+
+def test_farm_sites_are_trusted(farm, published):
+    assert t.site_trusted("time.solidarity.quest")
+    assert t.site_trusted("plan.ide.earth")                    # the listed site still
+    assert farm == ["https://fab.fish/system/api.json"]        # read once, from the anchor
+    v = t.verify_publication(SOURCE, t.PageRef(site="time.solidarity.quest", slug="plan", itemId="abc"))
+    assert v.ok and v.site == "time.solidarity.quest"
+
+
+def test_farm_except_and_strangers_refused(farm, published):
+    assert not t.site_trusted("lena.solidarity.quest")         # excepted
+    assert not t.site_trusted("other.example")                 # not on the farm
+    assert not t.site_trusted("10.0.0.5")                      # a private address never trusted
+    assert t.allowed_origin("https://time.solidarity.quest")
+    assert not t.allowed_origin("https://lena.solidarity.quest")
+
+
+def test_farm_list_cached_then_refreshed(farm, monkeypatch):
+    t.site_trusted("time.solidarity.quest"); t.site_trusted("time.solidarity.quest")
+    assert len(farm) == 1
+    monkeypatch.setattr(t, "FARM_CACHE_TTL", 0.0)
+    t.site_trusted("time.solidarity.quest")
+    assert len(farm) == 2
+
+
+def test_unreachable_anchor_contributes_nothing(trust_file, monkeypatch):
+    trust_file.write_text(json.dumps({"sites": ["plan.ide.earth"], "farms": ["https://fab.fish"]}))
+
+    def down(url):
+        raise OSError("no route")
+    monkeypatch.setattr(t, "fetch_json", down)
+    t._farm_cache.clear()
+    assert not t.site_trusted("time.solidarity.quest")
+    assert t.site_trusted("plan.ide.earth")
+
+
+def test_bare_farm_host_and_private_anchor(trust_file, monkeypatch):
+    trust_file.write_text(json.dumps({"farms": ["fab.fish", "https://10.0.0.5", "not a host"]}))
+    assert t.trust.farms() == ["https://fab.fish"]
+
+
+def test_trust_view_shows_farms(client, farm):
+    r = client.get("/terminal/trust", headers={"Origin": LOCAL})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["farms"] == ["https://fab.fish"] and body["farm_sites"] == 1 and body["except"] == ["lena.solidarity.quest"]
+
+
+def test_cors_follows_farm_list(client, farm):
+    r = client.options("/terminal/health", headers={"Origin": "https://time.solidarity.quest",
+                                                     "Access-Control-Request-Method": "GET"})
+    assert r.headers.get("access-control-allow-origin") == "https://time.solidarity.quest"
+    r = client.options("/terminal/health", headers={"Origin": "https://lena.solidarity.quest",
+                                                     "Access-Control-Request-Method": "GET"})
+    assert r.headers.get("access-control-allow-origin") is None
+
+
+# ── BUTTON from a trusted page: BOOT first, then one bracketed paste ─────────
+#
+# A Do Phase button's text is a brief for claude, not a shell script. Pasted
+# into a bare zsh it was parsed as a command line ("parse error near `then'",
+# arena.solidarity.quest, 2026-10-20). With boot, the service starts the BOOT
+# command (read from the verified source) in a new session, waits for it to
+# take the terminal, then pastes. Here BOOT is a cat that writes its stdin to a
+# file, so the test can read what the REPL would have received.
+
+def test_paste_boots_the_session_then_pastes_whole(client, monkeypatch, tmp_path):
+    out = tmp_path / "received.txt"
+    brief = "Do Phase 0 of the plan.\nRead the plan page first, then do every unticked checkpoint."
+    source = f"BUTTON: show\nBOOT: cat > {out}\n{brief}"
+    page = {"story": [{"type": "terminal", "id": "abc", "text": source}]}
+    monkeypatch.setattr(t, "fetch_page", lambda url: page)
+    name = "boot-test-session"
+    try:
+        r = client.post("/terminal/paste", json={"session": name, "text": brief, "page": REF, "source": source, "boot": True},
+                        headers={"Origin": LOCAL})
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert j["ok"] and j["booted"]
+        live = t.sessions[name]
+        assert not live.shell_idle()  # cat holds the terminal, not zsh
+        deadline = time.time() + 5
+        while time.time() < deadline and "\x1b[201~" not in (out.read_text() if out.exists() else ""):
+            time.sleep(0.1)
+        got = out.read_text()
+        assert got.startswith("\x1b[200~Do Phase 0 of the plan.")
+        assert "then do every unticked checkpoint.\x1b[201~" in got
+    finally:
+        if name in t.sessions:
+            t.sessions.pop(name).close()
+
+
+def test_paste_never_boots_from_the_askers_word(client, published):
+    # boot asked for, but the verified source has no BOOT: no session is made
+    r = client.post("/terminal/paste", json={"session": "s2", "text": "echo published", "page": REF, "source": SOURCE, "boot": True},
+                    headers={"Origin": LOCAL})
+    assert r.status_code == 409
+    assert "s2" not in t.sessions
