@@ -669,6 +669,56 @@ export const STYLE = `
   .terminal-item .hljs-number, .terminal-item .hljs-literal { color:#005cc5 }
   .terminal-item .hljs-meta { color:#032f62 }
   .terminal-item .hljs-title, .terminal-item .hljs-function { color:#6f42c1 }
+
+  /* Auto dark mode: follows the reader's OS, so the item renders correctly on
+     any site with no site theme involved. The run-output panel/bar/host are
+     already dark in both modes (THEME.background) and are left untouched; this
+     only re-skins the light surfaces — the script preview, the bash token
+     palette (GitHub-light hues swapped for GitHub-dark), the need chips, the
+     status line and the BUTTON-mode buttons. Scoped to .terminal-item so it
+     never leaks past the plugin's own DOM. */
+  @media (prefers-color-scheme: dark) {
+    .terminal-item .terminal-script { background:#1b1b1d; border-left-color:#d79000 }
+    .terminal-item .terminal-script code.hljs { color:#e4e4e4 }
+    .terminal-item .terminal-needs-hint:not(:empty) { color:#e3b341;
+      background:#1b1b1d; border-left-color:#d79000 }
+    .terminal-item .term-need-keychain { color:#d2a8ff; background:#2b2440 }
+    .terminal-item .term-need-value { color:#56d4a6; background:#16302a }
+    .terminal-item .term-need-ask { color:#79c0ff; background:#15283f }
+    .terminal-item .term-need-ask:focus { background:#1c3a5c }
+    .terminal-item select.term-need-sshhost { color:#56d4a6; background:#16302a }
+    .terminal-item select.term-need-vault { color:#d2a8ff; background:#2b2440 }
+    .terminal-item select.term-need-claudesession { color:#79c0ff; background:#15283f }
+    .terminal-item .t-status { color:#9a9a9a }
+    .terminal-item .t-actions button { background:#26262a; color:#e8e8e8;
+      border:1px solid #45454b }
+    .terminal-item .t-actions button:hover { background:#333 }
+    .terminal-item.term-open .terminal-tools .t-term { background:#ddd; color:#111 }
+    .terminal-item .t-verify.t-ok { color:#56d4a6 }
+    .terminal-item .t-verify.t-bad { color:#ff7b72 }
+    .terminal-item .terminal-tools button.t-lock { color:#ff7b72 }
+    .terminal-item .terminal-tools button.t-lock.t-open { color:#888 }
+    .terminal-item .terminal-tools button.t-lock:hover { color:#ddd }
+    .terminal-item .terminal-reply .exit { color:#9a9a9a }
+
+    .terminal-item .t-go { background:#2a2419; border-color:#d79000; color:#e3b341 }
+    .terminal-item .t-go:hover:not(:disabled) { background:#3a3220 }
+    .terminal-item .t-go-tab { background:#26262a; border-color:#45454b; color:#cfcfcf }
+    .terminal-item .t-go-tab:hover:not(:disabled) { background:#15283f; border-color:#3a6ea5 }
+    .terminal-item .t-go.t-go-sent { background:#16302a; border-color:#56d4a6; color:#56d4a6 }
+    .terminal-item .t-go.t-go-guard { background:#15283f; border-color:#79c0ff; color:#79c0ff }
+    .terminal-item.wf-locked .terminal-script { background:#2a1a1a; border-left-color:#d64545 }
+    .terminal-item .wf-lock-hint { color:#ff7b72 }
+
+    .terminal-item .hljs-comment { color:#8b949e }
+    .terminal-item .hljs-keyword { color:#ff7b72 }
+    .terminal-item .hljs-string { color:#a5d6ff }
+    .terminal-item .hljs-built_in { color:#79c0ff }
+    .terminal-item .hljs-variable, .terminal-item .hljs-template-variable { color:#ffa657 }
+    .terminal-item .hljs-number, .terminal-item .hljs-literal { color:#79c0ff }
+    .terminal-item .hljs-meta { color:#a5d6ff }
+    .terminal-item .hljs-title, .terminal-item .hljs-function { color:#d2a8ff }
+  }
 `
 
 // Stylesheets to load: only the plugin's own bundle (xterm.css — without it
