@@ -520,3 +520,20 @@ test('a refusal is said in words a reader can act on (0.9.20)', async () => {
   assert.match(plainRefusal('locked: https://x has no live grant on this machine — click Unlock'), /choose Unlock/)
   assert.equal(plainRefusal('something new'), 'something new')
 })
+
+test('Claude Code suggested reply is read off the input line (0.9.22)', async () => {
+  const { suggestionOf } = await import('../src/client/helpers.js')
+  const E = '\x1b'
+  // as MEASURED on a live session
+  const live = `old text ❯ earlier\r\n${E}[1B❯ ${E}[2mRotate the wiki client secret with keycloak-rotate-secret\r${E}[1B${E}[22m${E}[38;5;244m────`
+  assert.equal(suggestionOf(live), 'Rotate the wiki client secret with keycloak-rotate-secret')
+  // wrapped over two lines
+  const wrapped = `❯ ${E}[2mYes to all five, cybersyn.club first,\r${E}[1B${E}[3Cpi.private.fish for the Gatekeeper page${E}[22m`
+  assert.equal(suggestionOf(wrapped), 'Yes to all five, cybersyn.club first, pi.private.fish for the Gatekeeper page')
+  // empty prompt, typed text, a choice dialog: none
+  assert.equal(suggestionOf(`❯ \r${E}[1B${E}[38;5;244m────`), '')
+  assert.equal(suggestionOf(`❯ yes please\r`), '')
+  assert.equal(suggestionOf(`❯${E}[4G${E}[38;5;246m1. ${E}[38;5;153mYes\r`), '')
+  // only the latest paint counts
+  assert.equal(suggestionOf(`❯ ${E}[2mold${E}[22m … ❯ \r`), '')
+})

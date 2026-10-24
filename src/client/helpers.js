@@ -15,6 +15,29 @@ export const plainRefusal = why => {
   return w
 }
 
+// Claude Code's suggested reply (0.9.22, David 2026-10-24: "when in Claude
+// Code in the terminal there is a suggestion … it would be good to give this
+// option in the wiki interface"). Claude Code keeps the suggestion nowhere
+// until it is accepted (the transcript then says promptSource
+// suggestion_accepted); while it waits it paints it in the input box as dim
+// text after the prompt mark, MEASURED on a live session:
+//   ❯ ESC[2mRotate the wiki client secret with keycloak-rotate-secret\r ESC[1B ESC[22m
+// So the latest paint of the input line is read: the text between dim on and
+// dim off right after the last ❯, cursor moves read as spaces. A choice
+// dialog (❯ 1. Yes) or typed text (not dim) is no suggestion.
+export const suggestionOf = screen => {
+  const s = String(screen || '')
+  const i = s.lastIndexOf('❯')
+  if (i < 0) return ''
+  const m = s.slice(i + 1, i + 4000).match(/^[  ]?(?:\x1b\[[0-9;]*m)*?\x1b\[2m([\s\S]*?)\x1b\[22m/)
+  if (!m) return ''
+  return m[1]
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ' ')
+    .replace(/[\r\n ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 // pty sessions are named; items sharing a session share one shell.
 // Default: a session private to the item. A SESSION: directive overrides
 // the item field.
@@ -619,6 +642,14 @@ export const STYLE = `
   .terminal-item .t-progress-bad { border-color:#c62828; background:#fdecea; color:#7f1d1d }
   .terminal-item .t-progress-quiet { border-color:#ffb000; background:#fff8e6; color:#6b4d00 }
   .terminal-item .t-progress a { color:inherit; text-decoration:underline; cursor:pointer }
+  /* Claude's suggested reply (0.9.22) */
+  .terminal-item .t-suggest { margin-top:6px; display:flex; flex-wrap:wrap; align-items:center; gap:6px;
+    font:12px/1.4 sans-serif; color:#555 }
+  .terminal-item .t-suggest button { font:13px/1.4 sans-serif; padding:5px 10px; border-radius:6px;
+    border:1px dashed #1c5fa8; background:#f3f8ff; color:#1c5fa8; cursor:pointer; text-align:left;
+    max-width:100%; white-space:normal }
+  .terminal-item .t-suggest button:hover { background:#e3efff }
+  .terminal-item .t-suggest button:disabled { opacity:.5; cursor:default }
   .terminal-item .terminal-panel { display:none; margin-top:6px; border-radius:4px;
     overflow:hidden; background:${THEME.background} }
   .terminal-item.term-open .terminal-panel { display:block }
@@ -729,6 +760,8 @@ export const STYLE = `
     .terminal-item .terminal-tools button.t-lock:hover { color:#ddd }
     .terminal-item .terminal-reply .exit { color:#9a9a9a }
     .terminal-item .t-progress { border-color:#45454b; background:#26262a; color:#ddd }
+    .terminal-item .t-suggest { color:#aaa }
+    .terminal-item .t-suggest button { background:#15283f; border-color:#79c0ff; color:#cfe6ff }
     .terminal-item .t-progress-ok { border-color:#56d4a6; background:#16302a; color:#b6f0da }
     .terminal-item .t-progress-bad { border-color:#ff7b72; background:#3a1a1a; color:#ffc9c4 }
     .terminal-item .t-progress-quiet { border-color:#d79000; background:#2a2419; color:#f0d48a }

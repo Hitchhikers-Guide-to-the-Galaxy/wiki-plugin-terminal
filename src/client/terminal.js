@@ -39,7 +39,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
-import { plainRefusal, expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, originTrust,
+import { suggestionOf, plainRefusal, expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, originTrust,
   parseDirectives, schemeFor, attachResult, applyNeeds, resolveScript, needsPayload,
   needWarnings, buttonLabel, STYLE, ICONS, serviceOrigin, pageRef, isLocalHost,
   serviceCandidates, setServiceBase } from './helpers.js'
@@ -216,10 +216,10 @@ const mmss = ms => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
 }
 
-const watchActivity = ($item, $go, { base, session, label, local }) => {
+const watchActivity = ($item, $go, { base, session, label, local, who = 'The session', onWatch = null }) => {
   const had = $go.data('activity')
   if (had) return had
-  const A = { active: false, since: 0, last: 0, socket: null }
+  const A = { active: false, since: 0, last: 0, socket: null, tail: '', opened: 0, suggestion: '' }
   $go.data('activity', A)
   const alive = () => document.contains($go.get(0))
   const render = () => {
@@ -251,9 +251,14 @@ const watchActivity = ($item, $go, { base, session, label, local }) => {
     let ws
     try { ws = new WebSocket(wsUrl(base, `/terminal/pty/${session}`)) } catch { return }
     ws.binaryType = 'arraybuffer'
-    const opened = Date.now()
+    const opened = A.opened = Date.now()
+    const decoder = new TextDecoder()
+    A.tail = ''
     if (token) ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'auth', token })), { once: true })
-    ws.addEventListener('message', () => {
+    ws.addEventListener('message', event => {
+      // the screen as painted, for the suggested reply; the replay counts here
+      const chunk = typeof event.data === 'string' ? event.data : decoder.decode(event.data, { stream: true })
+      A.tail = (A.tail + chunk).slice(-200000)
       const now = Date.now()
       if (now - opened < JOIN_GRACE_MS) return
       A.last = now
@@ -281,10 +286,36 @@ const watchActivity = ($item, $go, { base, session, label, local }) => {
     }
     if (A.active && Date.now() - A.last > ACTIVE_MS) flip(false)
     else render()
+    suggest(!A.active && A.socket && Date.now() - A.opened > JOIN_GRACE_MS ? suggestionOf(A.tail) : '')
   }, 1000)
   const poll = setInterval(check, 10000)
   // After a send: working from the click, before the first output can count;
   // if nothing comes within the grace and the active window, it goes quiet.
+  // Claude's suggested reply, offered as a second button while it waits
+  // (0.9.22). A click types exactly the text shown and presses Return, the
+  // way accepting it in the terminal does; it goes over this same socket, so
+  // it needs nothing the panel does not already have.
+  const suggest = text => {
+    if (text === A.suggestion) return
+    A.suggestion = text
+    let $row = $item.find('.t-suggest')
+    if (!text) { $row.remove(); return }
+    if (!$row.length) { $row = $('<div class="t-suggest"></div>'); $go.closest('.terminal-go').after($row) }
+    $row.html(`<span>${expand(who)} suggests:</span><button title="type this reply into session ${expand(session)} and press Return, as accepting the suggestion in the terminal does">↳ ${expand(text)}</button>`)
+    $row.find('button').on('click', () => {
+      const ws = A.socket
+      if (!ws || ws.readyState !== WebSocket.OPEN || A.suggestion !== text) return
+      $row.find('button').prop('disabled', true)
+      // typed, not bracket-pasted: a one-line reply reads the same to Claude and to any program
+      ws.send(JSON.stringify({ type: 'input', data: text.replace(/[\r\n]+/g, ' ') }))
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data: '\r' }))
+        A.kick()
+        suggest('')
+        watchAfterSend($item, $go, { session, sentAt: Date.now(), onWatch, who })
+      }, 450)
+    })
+  }
   A.kick = () => {
     A.last = Date.now() + JOIN_GRACE_MS
     if (!A.active) flip(true)
@@ -997,7 +1028,7 @@ const bind = async ($item, item) => {
         if ($go.hasClass('t-go-working')) return $go.removeClass('t-go-sent').data('busy', false)
         $go.prop('disabled', false).data('busy', false).removeClass('t-go-sent').text(buttonLabel(opts))
       }
-      const activity = watchActivity($item, $go, { base, session: name, label: () => buttonLabel(opts), local: false })
+      const activity = watchActivity($item, $go, { base, session: name, label: () => buttonLabel(opts), local: false, who: whoRuns(opts), onWatch: openPanel })
       window.addEventListener('wiki-terminal-unlocked', () => activity.kick())
       $go.prop('disabled', false).attr('title', `run in session ${name} on this machine${opts.boot ? `, starting ${expand(opts.boot)} first if it is not running` : ''}` +
         (ctx.isLocalOrigin ? '' : ` — the first click asks you to allow ${expand(window.location.host)} on this machine`))
@@ -1180,7 +1211,7 @@ const bind = async ($item, item) => {
         return (await res.json()).exit === 0
       } catch { return false }
     }
-    const activity = watchActivity($item, $go, { base, session: sessionName(item, opts.session), label: () => label, local: true })
+    const activity = watchActivity($item, $go, { base, session: sessionName(item, opts.session), label: () => label, local: true, who: whoRuns(opts), onWatch: () => setOpen(true) })
     const showGuard = ok => {
       if ($go.hasClass('t-go-working')) return
       $go.toggleClass('t-go-guard', !ok)
