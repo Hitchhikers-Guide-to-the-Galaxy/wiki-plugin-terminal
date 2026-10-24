@@ -838,7 +838,7 @@ def must_verify(request: Request, ref: PageRef | None) -> bool:
     return trust.verify_local() and ref is not None
 
 
-DIRECTIVE_LINE = re.compile(r"^[A-Z][A-Z0-9_]*(?::.*|\s.*)?$")
+DIRECTIVE_LINE = re.compile(r"^[A-Z][A-Z0-9_]+(?::.*|\s.*)?$")  # two letters or more: "I have…" is prose
 
 
 def script_of(source: str) -> str:

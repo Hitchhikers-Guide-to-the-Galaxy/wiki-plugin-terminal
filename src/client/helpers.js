@@ -4,6 +4,17 @@
 export const expand = text =>
   String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
+/** A refusal from the service in words a reader can act on. */
+export const plainRefusal = why => {
+  const w = String(why || 'refused')
+  if (/not the script of the published item/.test(w))
+    return 'the terminal service read this button differently from the page (a first line it took for a setting), so it refused to send it'
+  if (/differs from what .* publishes/.test(w)) return 'the button on this page is not what the site has saved — save the page, reload, and try again'
+  if (/no live grant|locked/.test(w)) return 'this site is not allowed to run on this machine yet — click again and choose Unlock'
+  if (/not a trusted site/.test(w)) return `${w.replace(/ — .*/, '')}: add it to trust.json on this machine`
+  return w
+}
+
 // pty sessions are named; items sharing a session share one shell.
 // Default: a session private to the item. A SESSION: directive overrides
 // the item field.
@@ -601,6 +612,13 @@ export const STYLE = `
   .terminal-item .terminal-reply pre.hljs { margin:0; padding:6px }
   .terminal-item .terminal-reply pre.stderr code { color:#f14c4c }
   .terminal-item .terminal-reply .exit { font-size:10px; color:#888 }
+  /* send progress (0.9.20): what a BUTTON click is doing, in words */
+  .terminal-item .t-progress { font:13px/1.45 sans-serif; margin-top:6px; padding:6px 10px;
+    border-radius:6px; border:1px solid #d0d7de; background:#f6f8fa; color:#333 }
+  .terminal-item .t-progress-ok { border-color:#0a7d5a; background:#e7f6f0; color:#0b4f3b }
+  .terminal-item .t-progress-bad { border-color:#c62828; background:#fdecea; color:#7f1d1d }
+  .terminal-item .t-progress-quiet { border-color:#ffb000; background:#fff8e6; color:#6b4d00 }
+  .terminal-item .t-progress a { color:inherit; text-decoration:underline; cursor:pointer }
   .terminal-item .terminal-panel { display:none; margin-top:6px; border-radius:4px;
     overflow:hidden; background:${THEME.background} }
   .terminal-item.term-open .terminal-panel { display:block }
@@ -700,6 +718,10 @@ export const STYLE = `
     .terminal-item .terminal-tools button.t-lock.t-open { color:#888 }
     .terminal-item .terminal-tools button.t-lock:hover { color:#ddd }
     .terminal-item .terminal-reply .exit { color:#9a9a9a }
+    .terminal-item .t-progress { border-color:#45454b; background:#26262a; color:#ddd }
+    .terminal-item .t-progress-ok { border-color:#56d4a6; background:#16302a; color:#b6f0da }
+    .terminal-item .t-progress-bad { border-color:#ff7b72; background:#3a1a1a; color:#ffc9c4 }
+    .terminal-item .t-progress-quiet { border-color:#d79000; background:#2a2419; color:#f0d48a }
 
     .terminal-item .t-go { background:#2a2419; border-color:#d79000; color:#e3b341 }
     .terminal-item .t-go:hover:not(:disabled) { background:#3a3220 }

@@ -39,7 +39,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import hljs from 'highlight.js/lib/core'
 import bash from 'highlight.js/lib/languages/bash'
-import { expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, originTrust,
+import { plainRefusal, expand, sessionName, serviceBase, wsUrl, makeCaptureScanner, originTrust,
   parseDirectives, schemeFor, attachResult, applyNeeds, resolveScript, needsPayload,
   needWarnings, buttonLabel, STYLE, ICONS, serviceOrigin, pageRef, isLocalHost,
   serviceCandidates, setServiceBase } from './helpers.js'
@@ -195,6 +195,99 @@ const unlock = base => new Promise(resolve => {
     if (popup && popup.closed) { clearInterval(poll); window.removeEventListener('message', onMessage); resolve(Boolean(grantOf(base))) }
   }, 500)
 })
+
+
+// ── Send progress (0.9.20, David 2026-10-24: "when I click Send my answers
+// there is no clear feedback what is happening") ─────────────────────────────
+// A BUTTON hands its text to a Claude session that may take minutes. The
+// click now says, in words and on screen until something replaces it: what
+// is being done, that it reached the session, that the page will update as
+// the session writes, and when it did. A refusal stays up, in plain words,
+// with "nothing reached the session". The record survives the reload the
+// watch triggers (sessionStorage, per item), so the page says what happened.
+const SENT_KEY = id => `wiki-terminal.sent.${id}`
+const RESUME_MS = 60 * 60 * 1000
+const QUIET_MS = 15 * 60 * 1000
+const clock = (t = Date.now()) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+const since = t => {
+  const m = Math.round((Date.now() - t) / 60000)
+  return m < 1 ? 'under a minute' : m === 1 ? '1 min' : `${m} min`
+}
+const recallSend = id => { try { return JSON.parse(sessionStorage.getItem(SENT_KEY(id)) || 'null') } catch { return null } }
+const rememberSend = (id, rec) => { try { sessionStorage.setItem(SENT_KEY(id), JSON.stringify(rec)) } catch {} }
+const progress = ($item, html, kind = 'info') =>
+  $item.find('.terminal-reply').html(`<div class="t-progress t-progress-${kind}">${html}</div>`)
+// A wiki editor is open somewhere in the lineup: a reload would lose it.
+const editingNow = () => Boolean(document.querySelector('.page textarea, .page [contenteditable="true"]'))
+
+const whoRuns = opts => /\bclaude\b/i.test(String(opts.boot || '')) ? 'Claude' : 'The session'
+
+const sendingText = (session, booting, who = 'The session') => booting
+  ? `Starting ${who === 'Claude' ? 'Claude' : 'its program'} in session <b>${expand(session)}</b> and handing it this button's message — starting takes 10–30 seconds…`
+  : `Sending this button's message to session <b>${expand(session)}</b>…`
+
+const refusedText = (session, why) =>
+  `✗ Not sent: ${expand(plainRefusal(why))}. Nothing reached session <b>${expand(session)}</b>.`
+
+// After a good send: say so, keep saying how long, and reload once the page's
+// journal grows and settles — unless an editor is open, when it offers the
+// reload instead. Resumed after that reload for up to an hour from the send.
+const watchAfterSend = ($item, $go, { session, sentAt, changedAt = null, onWatch = null, who = 'The session' }) => {
+  const id = $item.data('id') || $item.attr('data-id')
+  const slug = ($item.parents('.page').attr('id') || '').replace(/_rev\d+$/, '')
+  rememberSend(id, { session, sentAt, changedAt, who })
+  const watchLink = onWatch ? ' <a href="#" class="t-watch-link">Watch it work</a>' : ''
+  const say = () => {
+    const head = `✓ Sent to session <b>${expand(session)}</b> at ${clock(sentAt)}.`
+    const body = changedAt
+      ? ` It changed this page at ${clock(changedAt)}; watching for more changes (${since(sentAt)} since the send).`
+      : ` ${who} is reading the page and working on it (${since(sentAt)} so far) — this can take a few minutes. This page reloads by itself when it changes.`
+    progress($item, head + body + watchLink, 'ok')
+    if (onWatch) $item.find('.t-watch-link').off('click').on('click', e => { e.preventDefault(); onWatch() })
+  }
+  say()
+  if (!slug || $go.data('watching')) return
+  $go.data('watching', true).addClass('t-go-watch')
+  const journalLen = async () => {
+    try {
+      const res = await fetch(`/${slug}.json`, { cache: 'no-store', signal: AbortSignal.timeout(5000) })
+      return ((await res.json()).journal || []).length
+    } catch { return null }
+  }
+  ;(async () => {
+    const start = await journalLen()
+    let grown = null
+    const quietFrom = changedAt || sentAt
+    while (Date.now() - sentAt < RESUME_MS) {
+      await new Promise(resolve => setTimeout(resolve, 4000))
+      if (!document.contains($go.get(0))) return
+      const len = await journalLen()
+      if (len == null || start == null) continue
+      if (grown != null && len === grown) {
+        const at = Date.now()
+        rememberSend(id, { session, sentAt, changedAt: at, who })
+        if (!editingNow()) return window.location.reload()
+        progress($item, `✓ Sent at ${clock(sentAt)}. The page changed at ${clock(at)} — <a href="#" class="t-reload-link">reload to see it</a> (not reloaded by itself while you are editing).`, 'ok')
+        $item.find('.t-reload-link').on('click', e => { e.preventDefault(); window.location.reload() })
+        break
+      }
+      if (len > start) grown = len
+      else if (Date.now() - quietFrom > QUIET_MS && !$go.data('quiet-said')) {
+        $go.data('quiet-said', true)
+        progress($item, `Sent to session <b>${expand(session)}</b> at ${clock(sentAt)}; no change on this page for ${since(quietFrom)}. ${who} may still be working, or waiting for you in its terminal.${watchLink ? ' <a href="#" class="t-watch-link">Open the terminal</a> to look.' : ''}`, 'quiet')
+        if (onWatch) $item.find('.t-watch-link').off('click').on('click', e => { e.preventDefault(); onWatch() })
+      } else if (!$go.data('quiet-said')) say()
+    }
+    $go.removeClass('t-go-watch').data('watching', false)
+  })()
+}
+
+/** On render: a send made in the last hour from this item says what happened, and keeps watching. */
+const resumeSend = ($item, $go, onWatch) => {
+  const rec = recallSend($item.data('id') || $item.attr('data-id'))
+  if (!rec || !rec.sentAt || Date.now() - rec.sentAt > RESUME_MS) return
+  watchAfterSend($item, $go, { ...rec, onWatch })
+}
 
 // One POST to the service with the page's provenance and the person's grant;
 // a 401 means locked — offer the unlock once and retry.
@@ -793,7 +886,6 @@ const bind = async ($item, item) => {
         (ctx.isLocalOrigin ? '' : ` — the first click asks you to allow ${expand(window.location.host)} on this machine`))
       $go.on('click', async () => {
         if ($go.data('busy')) return
-        $reply.empty()
         if (!ctx.isLocalOrigin && !grantOf(base)) {
           $go.data('busy', true).prop('disabled', true).text('allow it in the window that opened…')
           const ok = await unlock(base)
@@ -805,19 +897,22 @@ const bind = async ($item, item) => {
           window.dispatchEvent(new CustomEvent('wiki-terminal-unlocked', { detail: { base } }))
         }
         $go.data('busy', true).prop('disabled', true).text(opts.boot ? 'starting…' : 'sending…')
+        progress($item, sendingText(name, Boolean(opts.boot), whoRuns(opts)))
         if (opts.buttonShow) openPanel()
         try {
           const res = await post(base, '/terminal/paste',
             { session: name, text: script, page: ctx.ref, source: item.text, signature: item.signature || undefined, boot: Boolean(opts.boot) }, ctx)
           const j = await res.json()
           $go.text(j.ok ? 'sent ✓' : 'not sent').toggleClass('t-go-sent', Boolean(j.ok))
-          if (!j.ok) $reply.html(`<span class="exit">${expand(j.error || 'refused')}</span>`)
+          if (j.ok) watchAfterSend($item, $go, { session: name, sentAt: Date.now(), onWatch: openPanel, who: whoRuns(opts) })
+          else progress($item, refusedText(name, j.error), 'bad')
         } catch (err) {
           $go.text('not sent')
-          $reply.html(`<span class="exit">${expand(String(err))}</span>`)
+          progress($item, refusedText(name, String(err)), 'bad')
         }
         setTimeout(ready, 3000)
       })
+      resumeSend($item, $go, openPanel)
     }
     return
   }
@@ -1005,36 +1100,6 @@ const bind = async ($item, item) => {
       } catch { return false } // health raced away — treat as live, paste plainly
     }
 
-    // After a send, the agent on the other end may rewrite THIS page (tick a
-    // phase, walk the button). The stored page changes but the rendered one
-    // doesn't — so watch the page's own json and, once its journal grows and
-    // settles, reload so the reader sees the work land. Pulsing border while
-    // watching; gives up quietly after ten minutes.
-    const slug = ($item.parents('.page').attr('id') || '').replace(/_rev\d+$/, '')
-    const journalLen = async () => {
-      try {
-        const res = await fetch(`/${slug}.json`, {
-          cache: 'no-store', signal: AbortSignal.timeout(3000) })
-        return ((await res.json()).journal || []).length
-      } catch { return null }
-    }
-    const watchPage = async () => {
-      if (!slug || $go.data('watching')) return
-      $go.data('watching', true).addClass('t-go-watch')
-      const start = await journalLen()
-      const t0 = Date.now()
-      let grown = null
-      while (Date.now() - t0 < 10 * 60 * 1000) {
-        await new Promise(resolve => setTimeout(resolve, 4000))
-        if (!document.contains($go.get(0))) return
-        const len = await journalLen()
-        if (len == null || start == null) continue
-        if (grown != null && len === grown) return window.location.reload()
-        if (len > start) grown = len
-      }
-      $go.removeClass('t-go-watch').data('watching', false)
-    }
-
     // The guard state changes outside the page — a /login in the open
     // terminal, a logout in another window — so a guarded button watches
     // both ways and wears the truth on its face: briskly (5s) while failing,
@@ -1079,6 +1144,7 @@ const bind = async ($item, item) => {
         const handle = await armed()
         if (opts.boot && fresh) {
           $go.text('starting…')
+          progress($item, sendingText(sessionName(item, opts.session), true, whoRuns(opts)))
           await handle.ready
           handle.send(opts.boot + '\r')
           // The prompt goes only to the REPL: wait for the shell to hand the
@@ -1087,6 +1153,7 @@ const bind = async ($item, item) => {
           if (!(await bootedInto())) {
             await setOpen(true)
             $go.text('did not start — see the terminal')
+            progress($item, `✗ Not sent: ${expand(opts.boot)} did not start in session <b>${expand(sessionName(item, opts.session))}</b>. Nothing reached it — the terminal below shows why.`, 'bad')
             return
           }
           await awaitQuiet(handle)
@@ -1105,13 +1172,14 @@ const bind = async ($item, item) => {
         // BUTTON: show — do the sending in the open, so a closed panel never
         // leaves the reader wondering whether anything happened.
         if (opts.buttonShow && !$box.hasClass('term-open')) await setOpen(true)
+        progress($item, sendingText(sessionName(item, opts.session), false, whoRuns(opts)))
         await pasteScript(handle, scriptFor($box, script, opts.needs))
         // A TUI needs a beat to digest a paste before Return registers as
         // "submit" — wait for its echo to settle instead of racing it.
         await awaitQuiet(handle, 350, 2500)
         handle.send('\r')
         $go.text('sent ✓').addClass('t-go-sent')
-        watchPage()
+        watchAfterSend($item, $go, { session: sessionName(item, opts.session), sentAt: Date.now(), onWatch: () => setOpen(true), who: whoRuns(opts) })
       } finally {
         setTimeout(() => {
           $go.removeClass('t-go-sent').prop('disabled', false).data('busy', false)
@@ -1120,6 +1188,7 @@ const bind = async ($item, item) => {
         }, 2000)
       }
     })
+    resumeSend($item, $go, () => setOpen(true))
     // The script pane is hidden, so its dblclick-to-edit is out of reach:
     // dblclick on the row (not the button itself) opens the editor instead.
     $box.find('.terminal-go').on('dblclick', event => {

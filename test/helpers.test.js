@@ -513,3 +513,10 @@ test('TIMEOUT: the client never asks past the ceiling, so an older service (whic
   assert.equal(parseTimeout('100000m'), 600)
   assert.equal(parseDirectives('TIMEOUT: 9999\necho x').timeout, 600)
 })
+
+test('a refusal is said in words a reader can act on (0.9.20)', async () => {
+  const { plainRefusal } = await import('../src/client/helpers.js')
+  assert.match(plainRefusal('the text to run is not the script of the published item'), /read this button differently from the page/)
+  assert.match(plainRefusal('locked: https://x has no live grant on this machine — click Unlock'), /choose Unlock/)
+  assert.equal(plainRefusal('something new'), 'something new')
+})

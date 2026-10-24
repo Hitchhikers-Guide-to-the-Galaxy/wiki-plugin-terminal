@@ -158,6 +158,12 @@ def test_trust_file_reloads_without_restart(trust_file):
 def test_script_of_and_guard_of():
     assert t.script_of("RUN\nGUARD: test -f x\n\nLABEL: go\necho hi\nls") == "echo hi\nls"
     assert t.script_of("echo plain") == "echo plain"
+    # 0.9.20: a message that opens with a one-letter word is the script, not a
+    # directive (the Send my answers button began "I have answered…" and the
+    # service stripped it, so the paste was refused as "not the script").
+    src = "BUTTON: show\nLABEL: Send my answers\nSESSION: x\nBOOT: cd ~ && claude\nI have answered on the plan page."
+    assert t.script_of(src) == "I have answered on the plan page."
+    assert t.script_of("A note first\necho hi") == "A note first\necho hi"
     assert t.guard_of("RUN\nGUARD: test -f x\necho") == "test -f x"
     assert t.guard_of("echo") is None
 
