@@ -197,6 +197,104 @@ const unlock = base => new Promise(resolve => {
 })
 
 
+
+// ── Live activity (0.9.21, David 2026-10-24: "lets disable the Do Phase button
+// with some sort of animation showing that it is working") ────────────────────
+// MEASURED the same day: a Claude Code session prints ~500 bytes a second while
+// it works (its spinner) and nothing while it waits at its prompt or on a
+// question. So a BUTTON listens to its own session, read-only, the way the
+// panel does: output in the last few seconds means working. While it works the
+// button is disabled, striped and moving, with the time; when the session goes
+// quiet the button comes back. It joins only a session that exists with a
+// program running (joining a missing session would create it), and joining
+// makes the service replay the screen and the program redraw, so the first
+// moments do not count.
+const ACTIVE_MS = 6000
+const JOIN_GRACE_MS = 3000
+const mmss = ms => {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+const watchActivity = ($item, $go, { base, session, label, local }) => {
+  const had = $go.data('activity')
+  if (had) return had
+  const A = { active: false, since: 0, last: 0, socket: null }
+  $go.data('activity', A)
+  const alive = () => document.contains($go.get(0))
+  const render = () => {
+    if (A.active) {
+      $go.addClass('t-go-working').prop('disabled', true).text(`working… ${mmss(Date.now() - A.since)}`)
+        .attr('title', `session ${session} is working — this button comes back when it goes quiet`)
+    } else if ($go.hasClass('t-go-working')) {
+      $go.removeClass('t-go-working').prop('disabled', false).data('busy', false).text(label())
+        .attr('title', `send to session ${session}`)
+    }
+  }
+  const flip = active => {
+    A.active = active
+    if (active) {
+      // count from this button's own send when there is one (it survives a reload)
+      const rec = recallSend($item.data('id') || $item.attr('data-id'))
+      A.since = rec && rec.session === session && Date.now() - rec.sentAt < RESUME_MS ? rec.sentAt : Date.now()
+    }
+    render()
+    $item.trigger('terminal-activity', [active])
+  }
+  const connect = () => {
+    if (A.socket) return
+    let token = null
+    if (!local) {
+      token = grantOf(base)
+      if (!token) return // locked: no listening without the person's grant
+    }
+    let ws
+    try { ws = new WebSocket(wsUrl(base, `/terminal/pty/${session}`)) } catch { return }
+    ws.binaryType = 'arraybuffer'
+    const opened = Date.now()
+    if (token) ws.addEventListener('open', () => ws.send(JSON.stringify({ type: 'auth', token })), { once: true })
+    ws.addEventListener('message', () => {
+      const now = Date.now()
+      if (now - opened < JOIN_GRACE_MS) return
+      A.last = now
+      if (!A.active) flip(true)
+    })
+    ws.addEventListener('close', () => {
+      A.socket = null
+      if (A.active) flip(false)
+    })
+    A.socket = ws
+  }
+  const check = async () => {
+    if (!alive() || A.socket) return
+    try {
+      const res = await fetch(`${base}/terminal/health`, { cache: 'no-store', signal: AbortSignal.timeout(3000) })
+      const j = await res.json()
+      if ((j.sessions || []).includes(session) && !(j.idle || []).includes(session)) connect()
+    } catch {}
+  }
+  const timer = setInterval(() => {
+    if (!alive()) {
+      clearInterval(timer); clearInterval(poll)
+      try { if (A.socket) A.socket.close() } catch {}
+      return
+    }
+    if (A.active && Date.now() - A.last > ACTIVE_MS) flip(false)
+    else render()
+  }, 1000)
+  const poll = setInterval(check, 10000)
+  // After a send: working from the click, before the first output can count;
+  // if nothing comes within the grace and the active window, it goes quiet.
+  A.kick = () => {
+    A.last = Date.now() + JOIN_GRACE_MS
+    if (!A.active) flip(true)
+    check(); setTimeout(check, 2500); setTimeout(check, 6000)
+  }
+  A.state = () => (A.socket ? (A.active ? 'working' : 'quiet') : 'unknown')
+  check()
+  return A
+}
+
 // ── Send progress (0.9.20, David 2026-10-24: "when I click Send my answers
 // there is no clear feedback what is happening") ─────────────────────────────
 // A BUTTON hands its text to a Claude session that may take minutes. The
@@ -237,17 +335,31 @@ const watchAfterSend = ($item, $go, { session, sentAt, changedAt = null, onWatch
   const slug = ($item.parents('.page').attr('id') || '').replace(/_rev\d+$/, '')
   rememberSend(id, { session, sentAt, changedAt, who })
   const watchLink = onWatch ? ' <a href="#" class="t-watch-link">Watch it work</a>' : ''
+  // One report per item: a newer send (or a resumed one) retires the older
+  // loop, whose closure would otherwise keep saying the old send's time.
+  const token = {}
+  $item.data('send-token', token)
+  const current = () => $item.data('send-token') === token
   const say = () => {
-    const head = `✓ Sent to session <b>${expand(session)}</b> at ${clock(sentAt)}.`
-    const body = changedAt
-      ? ` It changed this page at ${clock(changedAt)}; watching for more changes (${since(sentAt)} since the send).`
-      : ` ${who} is reading the page and working on it (${since(sentAt)} so far) — this can take a few minutes. This page reloads by itself when it changes.`
-    progress($item, head + body + watchLink, 'ok')
+    if (!current()) return
+    const act = $go.data('activity')
+    const state = act ? act.state() : 'unknown'
+    const head = `✓ Sent to session <b>${expand(session)}</b> at ${clock(sentAt)}.` +
+      (changedAt ? ` It changed this page at ${clock(changedAt)}.` : '')
+    const body = state === 'working'
+      ? ` ${who} is working on it now (${since(sentAt)} since the send). This page reloads by itself when it changes.`
+      : state === 'quiet'
+        ? ` ${who} has gone quiet (${since(sentAt)} since the send): it has finished, or it is waiting for you in its terminal.`
+        : changedAt
+          ? ` Watching for more changes (${since(sentAt)} since the send).`
+          : ` ${who} is reading the page and working on it (${since(sentAt)} so far) — this can take a few minutes. This page reloads by itself when it changes.`
+    progress($item, head + body + watchLink, state === 'quiet' ? 'quiet' : 'ok')
     if (onWatch) $item.find('.t-watch-link').off('click').on('click', e => { e.preventDefault(); onWatch() })
   }
   say()
-  if (!slug || $go.data('watching')) return
-  $go.data('watching', true).addClass('t-go-watch')
+  $item.off('terminal-activity.send').on('terminal-activity.send', () => { if (!$go.data('quiet-said')) say() })
+  if (!slug) return
+  $go.addClass('t-go-watch')
   const journalLen = async () => {
     try {
       const res = await fetch(`/${slug}.json`, { cache: 'no-store', signal: AbortSignal.timeout(5000) })
@@ -260,7 +372,7 @@ const watchAfterSend = ($item, $go, { session, sentAt, changedAt = null, onWatch
     const quietFrom = changedAt || sentAt
     while (Date.now() - sentAt < RESUME_MS) {
       await new Promise(resolve => setTimeout(resolve, 4000))
-      if (!document.contains($go.get(0))) return
+      if (!document.contains($go.get(0)) || !current()) return
       const len = await journalLen()
       if (len == null || start == null) continue
       if (grown != null && len === grown) {
@@ -272,13 +384,13 @@ const watchAfterSend = ($item, $go, { session, sentAt, changedAt = null, onWatch
         break
       }
       if (len > start) grown = len
-      else if (Date.now() - quietFrom > QUIET_MS && !$go.data('quiet-said')) {
+      else if (Date.now() - quietFrom > QUIET_MS && !$go.data('quiet-said') && !($go.data('activity') && $go.data('activity').state() !== 'unknown')) {
         $go.data('quiet-said', true)
         progress($item, `Sent to session <b>${expand(session)}</b> at ${clock(sentAt)}; no change on this page for ${since(quietFrom)}. ${who} may still be working, or waiting for you in its terminal.${watchLink ? ' <a href="#" class="t-watch-link">Open the terminal</a> to look.' : ''}`, 'quiet')
         if (onWatch) $item.find('.t-watch-link').off('click').on('click', e => { e.preventDefault(); onWatch() })
       } else if (!$go.data('quiet-said')) say()
     }
-    $go.removeClass('t-go-watch').data('watching', false)
+    if (current()) $go.removeClass('t-go-watch')
   })()
 }
 
@@ -881,7 +993,12 @@ const bind = async ($item, item) => {
         document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkGrant(base) })
       }
 
-      const ready = () => $go.prop('disabled', false).data('busy', false).removeClass('t-go-sent').text(buttonLabel(opts))
+      const ready = () => {
+        if ($go.hasClass('t-go-working')) return $go.removeClass('t-go-sent').data('busy', false)
+        $go.prop('disabled', false).data('busy', false).removeClass('t-go-sent').text(buttonLabel(opts))
+      }
+      const activity = watchActivity($item, $go, { base, session: name, label: () => buttonLabel(opts), local: false })
+      window.addEventListener('wiki-terminal-unlocked', () => activity.kick())
       $go.prop('disabled', false).attr('title', `run in session ${name} on this machine${opts.boot ? `, starting ${expand(opts.boot)} first if it is not running` : ''}` +
         (ctx.isLocalOrigin ? '' : ` — the first click asks you to allow ${expand(window.location.host)} on this machine`))
       $go.on('click', async () => {
@@ -904,7 +1021,7 @@ const bind = async ($item, item) => {
             { session: name, text: script, page: ctx.ref, source: item.text, signature: item.signature || undefined, boot: Boolean(opts.boot) }, ctx)
           const j = await res.json()
           $go.text(j.ok ? 'sent ✓' : 'not sent').toggleClass('t-go-sent', Boolean(j.ok))
-          if (j.ok) watchAfterSend($item, $go, { session: name, sentAt: Date.now(), onWatch: openPanel, who: whoRuns(opts) })
+          if (j.ok) { activity.kick(); watchAfterSend($item, $go, { session: name, sentAt: Date.now(), onWatch: openPanel, who: whoRuns(opts) }) }
           else progress($item, refusedText(name, j.error), 'bad')
         } catch (err) {
           $go.text('not sent')
@@ -1063,7 +1180,9 @@ const bind = async ($item, item) => {
         return (await res.json()).exit === 0
       } catch { return false }
     }
+    const activity = watchActivity($item, $go, { base, session: sessionName(item, opts.session), label: () => label, local: true })
     const showGuard = ok => {
+      if ($go.hasClass('t-go-working')) return
       $go.toggleClass('t-go-guard', !ok)
       $go.text(ok ? label : (opts.guardLabel || 'setup needed'))
       $go.attr('title', ok
@@ -1179,9 +1298,11 @@ const bind = async ($item, item) => {
         await awaitQuiet(handle, 350, 2500)
         handle.send('\r')
         $go.text('sent ✓').addClass('t-go-sent')
+        activity.kick()
         watchAfterSend($item, $go, { session: sessionName(item, opts.session), sentAt: Date.now(), onWatch: () => setOpen(true), who: whoRuns(opts) })
       } finally {
         setTimeout(() => {
+          if ($go.hasClass('t-go-working')) return $go.removeClass('t-go-sent').data('busy', false)
           $go.removeClass('t-go-sent').prop('disabled', false).data('busy', false)
           if (opts.guard) guardOk().then(showGuard) // the standing watch carries on
           else $go.text(label)

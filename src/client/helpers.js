@@ -658,6 +658,16 @@ export const STYLE = `
   .terminal-item .t-go.t-go-guard { background:#e8f1fc; border-color:#1c5fa8;
     color:#1c5fa8 }
   .terminal-item .t-go.t-go-watch { animation: t-go-pulse 2s ease-in-out infinite }
+  /* working (0.9.21): the session is printing — disabled, striped, moving */
+  .terminal-item .t-go.t-go-working, .terminal-item .t-go.t-go-working:disabled {
+    opacity:1; cursor:progress; color:#6b4d00; border-color:#d79000;
+    font-variant-numeric: tabular-nums;
+    background-color:#fff3d1;
+    background-image: repeating-linear-gradient(-45deg, rgba(255,176,0,.38) 0 10px, rgba(255,176,0,.06) 10px 20px);
+    background-size: 28.28px 28.28px;
+    animation: t-go-stripes 1s linear infinite }
+  @keyframes t-go-stripes { from { background-position: 0 0 } to { background-position: 28.28px 0 } }
+  @media (prefers-reduced-motion: reduce) { .terminal-item .t-go.t-go-working { animation: none } }
   @keyframes t-go-pulse {
     0%, 100% { box-shadow: 0 0 0 0 rgba(255,176,0,0) }
     50% { box-shadow: 0 0 0 4px rgba(255,176,0,.35) }
@@ -728,6 +738,8 @@ export const STYLE = `
     .terminal-item .t-go-tab { background:#26262a; border-color:#45454b; color:#cfcfcf }
     .terminal-item .t-go-tab:hover:not(:disabled) { background:#15283f; border-color:#3a6ea5 }
     .terminal-item .t-go.t-go-sent { background:#16302a; border-color:#56d4a6; color:#56d4a6 }
+    .terminal-item .t-go.t-go-working, .terminal-item .t-go.t-go-working:disabled { background-color:#2a2419; color:#f0d48a;
+      background-image: repeating-linear-gradient(-45deg, rgba(215,144,0,.45) 0 10px, rgba(215,144,0,.08) 10px 20px) }
     .terminal-item .t-go.t-go-guard { background:#15283f; border-color:#79c0ff; color:#79c0ff }
     .terminal-item.wf-locked .terminal-script { background:#2a1a1a; border-left-color:#d64545 }
     .terminal-item .wf-lock-hint { color:#ff7b72 }
