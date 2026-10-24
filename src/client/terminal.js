@@ -56,12 +56,28 @@ const THEME = schemeFor('dark')
 
 const LINK_CSS = ['/plugins/terminal/terminal.css']
 
+// The wiki's fixed footer (z-index 1000) paints over a zoomed panel: the panel's
+// z-index 9999 only counts inside the .page stacking context (z-index 10). So a
+// zoomed panel stops above the footer instead — its height is published as
+// --terminal-footer-h and kept current as the footer wraps or the window
+// resizes. No footer (Sweet face) leaves the variable unset: full height.
+const trackFooter = () => {
+  const footer = document.querySelector('body > footer, footer')
+  if (!footer) return
+  const set = () => document.documentElement.style.setProperty(
+    '--terminal-footer-h', `${footer.getBoundingClientRect().height}px`)
+  set()
+  if (window.ResizeObserver) new ResizeObserver(set).observe(footer)
+  else window.addEventListener('resize', set)
+}
+
 const ensureAssets = () => {
   if (!document.getElementById('terminal-plugin-style')) {
     const style = document.createElement('style')
     style.id = 'terminal-plugin-style'
     style.textContent = STYLE
     document.head.appendChild(style)
+    trackFooter()
   }
   for (const href of LINK_CSS) {
     if (!document.querySelector(`link[href='${href}']`)) {

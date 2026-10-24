@@ -663,7 +663,8 @@ export const STYLE = `
     border-radius:3px }
   .terminal-item .terminal-host { height:240px; padding:6px;
     background:${THEME.background} }
-  .terminal-item .terminal-panel.zoomed { position:fixed; inset:0; z-index:9999;
+  .terminal-item .terminal-panel.zoomed { position:fixed; inset:0;
+    bottom:var(--terminal-footer-h, 0px); z-index:9999;
     margin:0; border-radius:0; display:flex; flex-direction:column }
   .terminal-item .terminal-panel.zoomed .terminal-host { flex:1; height:auto }
 
