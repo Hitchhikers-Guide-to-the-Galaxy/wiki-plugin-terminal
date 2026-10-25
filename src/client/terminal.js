@@ -134,7 +134,15 @@ const trustList = base => {
     window.wikiTerminalTrust = fetch(`${base}/terminal/trust`, {
       headers: authHeaders(base), signal: AbortSignal.timeout(2500) })
       .then(r => (r.ok ? r.json() : { sites: [] }))
-      .then(t => { window.wikiTerminalTrustSites = t.sites || []; return t })
+      .then(t => {
+        window.wikiTerminalTrustSites = t.sites || []
+        // A standing Unlock: this origin is one of the owner's own sites, so it
+        // needs no grant (Standing Unlock Plan, 2026-10-25). Toolbars that drew
+        // locked before the answer came back are told it lifted.
+        window.wikiTerminalStanding = Boolean(t.standing)
+        if (t.standing) window.dispatchEvent(new CustomEvent('wiki-terminal-unlocked', { detail: { base } }))
+        return t
+      })
       .catch(() => ({ sites: [] }))
   }
   return window.wikiTerminalTrust
@@ -144,16 +152,23 @@ const trustList = base => {
 // by postMessage and kept per tab. Sent as a bearer; websockets send it as
 // their first frame. Never a cookie (third-party cookies are blocked).
 const grantKey = base => `wiki-terminal-unlock:${serviceOrigin(base)}`
+// Under a standing Unlock there is no grant to hold: 'standing' stands in for
+// one, so every door below (bearer, websocket auth frame, click) goes ahead; the
+// service decides from the Origin alone and ignores the token.
+const STANDING = 'standing'
 const grantOf = base => {
   try {
     const raw = sessionStorage.getItem(grantKey(base))
-    if (!raw) return null
+    if (!raw) return window.wikiTerminalStanding ? STANDING : null
     const g = JSON.parse(raw)
     if (g.exp * 1000 < Date.now()) { sessionStorage.removeItem(grantKey(base)); return null }
     return g.token
   } catch { return null }
 }
-const forgetGrant = base => { try { sessionStorage.removeItem(grantKey(base)) } catch {} }
+const forgetGrant = base => {
+  window.wikiTerminalStanding = false // the service said locked: Lock everything paused it
+  try { sessionStorage.removeItem(grantKey(base)) } catch {}
+}
 
 // A grant held in this tab can be dead while it still looks current: the service
 // mints a fresh secret each time it starts (and on Lock everything), voiding every
@@ -200,7 +215,9 @@ const unlock = base => new Promise(resolve => {
       window.removeEventListener('message', onMessage)
       resolve(true)
     } else if (event.data.type === 'wiki-terminal-lock') {
-      try { sessionStorage.removeItem(grantKey(base)) } catch {}
+      forgetGrant(base)
+    } else if (event.data.type === 'wiki-terminal-standing') {
+      window.wikiTerminalStanding = true
     }
   }
   window.addEventListener('message', onMessage)
@@ -955,10 +972,13 @@ const bind = async ($item, item) => {
           .removeClass('t-ok').addClass('t-bad')
       }
       const locked = Boolean(v.locked)
-      $lock.toggleClass('t-open', !locked).html(locked ? ICONS.lock : ICONS.unlock)
+      const standing = !locked && grantOf(base) === STANDING
+      $lock.toggleClass('t-open', !locked).toggleClass('t-standing', standing).html(locked ? ICONS.lock : ICONS.unlock)
         .attr('title', locked
           ? `locked — click to allow ${origin} to run verified scripts on this machine`
-          : `unlocked for this tab — click to lock ${origin} out again`)
+          : standing
+            ? `standing Unlock — ${origin} is one of your own sites; click to see it on this machine (Lock everything pauses it)`
+            : `unlocked for this tab — click to lock ${origin} out again`)
       $acts.toggle(v.ok && !locked)
     }
     const verify = async () => {
@@ -976,7 +996,11 @@ const bind = async ($item, item) => {
     // service's own page; open → forget it here (the service keeps its secret;
     // the next click mints afresh). Every toolbar on the page follows suit.
     $lock.on('click', async () => {
-      if ($lock.hasClass('t-open')) {
+      if ($lock.hasClass('t-standing')) {
+        // nothing to forget in this tab: show the Unlock page, where Lock everything pauses it
+        if (await unlock(base)) window.dispatchEvent(new CustomEvent('wiki-terminal-unlocked', { detail: { base } }))
+        else verify()
+      } else if ($lock.hasClass('t-open')) {
         try { sessionStorage.removeItem(grantKey(base)) } catch {}
         window.dispatchEvent(new CustomEvent('wiki-terminal-locked', { detail: { base } }))
       } else if (await unlock(base)) {

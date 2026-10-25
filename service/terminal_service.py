@@ -559,12 +559,16 @@ class TrustStore:
     def farms(self) -> list[dict]:
         """Farm anchors: each {anchor, owner}. An entry is an https URL (a bare
         host is taken as https://host) for the whole farm, or an object
-        {"anchor": url, "owner": id} for the sites that id owns on it."""
+        {"anchor": url, "owner": id} for the sites that id owns on it.
+        An owner entry may add "standing": true — a standing Unlock for those
+        sites (see standing_sites); a whole-farm entry never stands."""
         out = []
         for x in self.load().get("farms", []):
             owner = None
+            standing = False
             if isinstance(x, dict):
                 owner = str(x.get("owner") or "").strip() or None
+                standing = x.get("standing") is True
                 x = x.get("anchor")
             if not isinstance(x, str):
                 continue
@@ -575,7 +579,8 @@ class TrustStore:
             if owner is not None and not OWNER_ID.match(owner):
                 continue
             if SITE_NAME.match(host) and not _private_address(host):
-                out.append({"anchor": "https://" + host, "owner": owner})
+                out.append({"anchor": "https://" + host, "owner": owner,
+                            "standing": bool(standing and owner)})
         return out
 
     def excepted(self) -> set[str]:
@@ -598,6 +603,8 @@ class TrustStore:
             "listed": sorted(self.sites()),
             "farms": self.farms(),
             "farm_sites": len(trusted_sites() - self.sites()),
+            "standing_sites": len(standing_sites()),
+            "standing_paused": _standing_paused,
             "except": sorted(self.excepted()),
             "keys": {k: (v.get("id") if isinstance(v, dict) else None) for k, v in self.keys().items()},
             "verify_local": self.verify_local(),
@@ -661,6 +668,29 @@ def site_trusted(site: str | None) -> bool:
     if not site:
         return False
     return site.lower() in trusted_sites()
+
+
+# A standing Unlock (Standing Unlock Plan, 2026-10-25): the sites David owns on
+# his own farms — a farm entry with an owner and "standing": true — need no
+# grant. The list comes from his farm, never from the page; publication is still
+# checked; `except` still removes a site; Lock everything pauses it until the
+# service restarts or the Unlock page resumes it.
+_standing_paused = False
+
+
+def standing_sites() -> set[str]:
+    """Sites whose https origin passes the Unlock without a grant."""
+    sites: set[str] = set()
+    for farm in trust.farms():
+        if farm.get("standing") and farm.get("owner"):
+            sites |= farm_sites(farm["anchor"], farm["owner"])
+    return {s for s in sites - trust.excepted() if not _private_address(s)}
+
+
+def origin_standing(origin: str | None) -> bool:
+    if _standing_paused or not origin or not origin.lower().startswith("https://"):
+        return False
+    return _origin_host(origin) in standing_sites()
 
 
 def allowed_origin(origin: str | None) -> bool:
@@ -952,10 +982,16 @@ def live_grants() -> list[dict]:
 
 
 def lock_all() -> None:
-    global _grant_secret
+    global _grant_secret, _standing_paused
     _grant_secret = os.urandom(32)
     _grants.clear()
     _revoked.clear()
+    _standing_paused = True
+
+
+def resume_standing() -> None:
+    global _standing_paused
+    _standing_paused = False
 
 
 def bearer_of(request: Request) -> str | None:
@@ -967,6 +1003,14 @@ def bearer_of(request: Request) -> str | None:
 
 def origin_is_local(origin: str | None) -> bool:
     return bool(origin) and _local_host(_origin_host(origin))
+
+
+def consented(origin: str | None, token: str | None) -> bool:
+    """The Unlock question, asked one way by every door: a local origin, one of
+    David's own sites under a standing Unlock, or a live grant for this origin."""
+    if not origin or origin_is_local(origin):
+        return True
+    return origin_standing(origin) or check_grant(token, origin)
 
 
 def gate(request: Request, text: str, ref: PageRef | None, source: str | None = None,
@@ -982,7 +1026,7 @@ def gate(request: Request, text: str, ref: PageRef | None, source: str | None = 
     if not http_origin_allowed(request):
         return Verdict(ok=False, why="forbidden origin", status=403)
     if origin and not origin_is_local(origin):
-        if not check_grant(bearer_of(request), origin):
+        if not consented(origin, bearer_of(request)):
             return Verdict(ok=False, why=f"locked: {origin} has no live grant on this machine — click Unlock",
                            status=401, locked=True)
     if must_verify(request, ref) or signature is not None:
@@ -1024,9 +1068,73 @@ def http_origin_allowed(request: Request) -> bool:
 @router.get("/health")
 def health(request: Request):
     origin = request.headers.get("origin")
-    locked = bool(origin) and not origin_is_local(origin) and not check_grant(bearer_of(request), origin)
+    locked = not consented(origin, bearer_of(request))
     idle = sorted(n for n, s in sessions.items() if s.shell_idle())
     return {"status": "ok", "sessions": sorted(sessions), "idle": idle, "locked": locked, "trust": bool(trust.sites())}
+
+
+# ── Claude Sessions: a read-only door (Standing Unlock Plan, 2026-10-25) ─────
+#
+# The Plan Tool's Claude Sessions face lists every Claude session on this
+# laptop. It used to post `claude agents --json` and `ps -E` to /terminal/run:
+# bare text with no page behind it, so a remote page could never pass the
+# publication check, and `ps -E` handed the page each process's whole
+# environment, tokens and all. Here the service runs both itself and returns
+# only the sessions and, per pid, the wiki terminal session its ZDOTDIR names.
+AGENTS_TIMEOUT = 20
+_ZDOTDIR_SESSION = re.compile(r"(?:^|\s)ZDOTDIR=\S*/wiki-plugin-terminal/sessions/([A-Za-z0-9][A-Za-z0-9_.-]*)(?=\s|$)")
+
+
+def _shell_out(cmd: list[str], check: bool = True) -> str:
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=AGENTS_TIMEOUT, env=interactive_env())
+    if check and proc.returncode != 0:
+        last = (proc.stderr or "").strip().splitlines()
+        raise ValueError(last[-1] if last else f"exit {proc.returncode}")
+    return proc.stdout
+
+
+# Test seam: a test replaces shell_out with a stub.
+shell_out = _shell_out
+
+
+def terminals_of(ps_text: str) -> dict[int, str]:
+    """pid -> wiki terminal session, read from `ps -E` lines; nothing else kept."""
+    out: dict[int, str] = {}
+    for line in (ps_text or "").split("\n"):
+        pid = re.match(r"^\s*(\d+)\s", line)
+        z = _ZDOTDIR_SESSION.search(line)
+        if pid and z:
+            out[int(pid.group(1))] = z.group(1)
+    return out
+
+
+@router.get("/agents")
+def agents_view(request: Request):
+    """Every Claude session on this machine (`claude agents --json`), with the
+    wiki terminal session of each pid the wiki started. Read-only; no text from
+    the page runs, so it needs the Unlock (or a standing one) and no page."""
+    origin = request.headers.get("origin")
+    if not http_origin_allowed(request):
+        return JSONResponse({"error": "forbidden origin"}, status_code=403)
+    if not consented(origin, bearer_of(request)):
+        return JSONResponse({"error": f"locked: {origin} has no live grant on this machine — click Unlock",
+                             "locked": True}, status_code=401)
+    try:
+        agents = json.loads(shell_out(["zsh", "-c", "claude agents --json"]))
+        if not isinstance(agents, list):
+            raise ValueError("claude agents --json did not print a list")
+    except (subprocess.TimeoutExpired, ValueError, OSError) as e:
+        return JSONResponse({"error": f"could not run claude agents --json: {e}"}, status_code=502)
+    agents = [a for a in agents if isinstance(a, dict)]
+    pids = sorted({a["pid"] for a in agents if isinstance(a.get("pid"), int) and a["pid"] > 0})
+    terminals: dict[int, str] = {}
+    if pids:
+        try:
+            # ps exits 1 when one pid has gone, and still prints the rest
+            terminals = terminals_of(shell_out(["ps", "-E", "-o", "pid=,command=", "-p", ",".join(map(str, pids))], check=False))
+        except (subprocess.TimeoutExpired, OSError):
+            terminals = {}
+    return {"agents": agents, "terminals": {str(k): v for k, v in terminals.items()}}
 
 
 # ── Claude Code conversations ────────────────────────────────────────────────
@@ -1302,7 +1410,7 @@ def verify(req: VerifyRequest, request: Request):
                 "signed_by": signed.signed_by if signed and signed.ok else None,
                 "signature": None if signed is None else ("ok" if signed.ok else signed.why)}
     origin = request.headers.get("origin")
-    locked = bool(origin) and not origin_is_local(origin) and not check_grant(bearer_of(request), origin)
+    locked = not consented(origin, bearer_of(request))
     if signed and signed.ok:
         return {"ok": True, "why": "", "site": None, "signed_by": signed.signed_by, "at": signed.at,
                 "signature": "ok", "locked": locked}
@@ -1407,7 +1515,8 @@ def trust_view(request: Request):
     if origin and not allowed_origin(origin):
         return JSONResponse({"error": "forbidden origin"}, status_code=403)
     data = trust.public()
-    data["locked"] = bool(origin) and not origin_is_local(origin) and not check_grant(bearer_of(request), origin)
+    data["locked"] = not consented(origin, bearer_of(request))
+    data["standing"] = origin_standing(origin)
     data["unlock"] = "/terminal/unlock"
     return data
 
@@ -1435,13 +1544,23 @@ ul{padding-left:1.2em}small{color:#666}</style></head><body>
 <button id="lock">Lock everything</button></p>
 <p><small id="status"></small></p>
 <h3>Live grants</h3><ul id="grants"><li><small>none</small></li></ul>
+<h3>Standing Unlock</h3><p id="standing"><small>…</small></p>
+<p><button id="resume" hidden>Resume the standing Unlock</button></p>
 <script>
 const origin = __ORIGIN_JSON__
 const $ = s => document.querySelector(s)
 const refresh = async () => {
-  const r = await fetch('/terminal/grants'); const j = await r.json()
+  const r = await fetch('/terminal/grants?origin=' + encodeURIComponent(origin)); const j = await r.json()
   $('#grants').innerHTML = (j.grants||[]).map(g => `<li><code>${g.origin}</code> until ${new Date(g.exp*1000).toLocaleTimeString()}</li>`).join('') || '<li><small>none</small></li>'
+  const st = j.standing || {}
+  $('#standing').innerHTML = st.paused
+    ? `<b>Paused</b> by Lock everything: your own ${st.sites} sites ask for Unlock like any other until you resume it or the service restarts.`
+    : st.sites
+      ? `On for ${st.sites} sites you own (trust.json farms with <code>"standing": true</code>)${st.here ? `, <code>${origin}</code> among them: it needs no Unlock` : ''}. Lock everything pauses it.`
+      : '<small>Off: no trust.json farm entry has <code>"standing": true</code>.</small>'
+  $('#resume').hidden = !st.paused
 }
+$('#resume').onclick = async () => { await fetch('/terminal/unlock/resume', {method:'POST'}); $('#status').textContent = 'standing Unlock resumed'; if (window.opener) window.opener.postMessage({type:'wiki-terminal-standing'}, origin); await refresh() }
 const grant = async ttl => {
   const r = await fetch('/terminal/unlock/grant', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({origin, ttl})})
   const j = await r.json()
@@ -1491,7 +1610,20 @@ def unlock_grant(req: GrantRequest, request: Request):
 def grants(request: Request):
     if not _same_origin(request):
         return JSONResponse({"error": "same-origin only"}, status_code=403)
-    return {"grants": live_grants()}
+    origin = (request.query_params.get("origin") or "").strip().rstrip("/")
+    return {"grants": live_grants(),
+            "standing": {"sites": len(standing_sites()), "paused": _standing_paused,
+                         "here": bool(origin) and not _standing_paused and origin_standing(origin)}}
+
+
+@router.post("/unlock/resume")
+def unlock_resume(request: Request):
+    """Lift the pause Lock everything put on the standing Unlock."""
+    if not _same_origin(request):
+        return JSONResponse({"error": "same-origin only"}, status_code=403)
+    resume_standing()
+    print("terminal unlock: standing Unlock resumed")
+    return {"ok": True}
 
 
 @router.post("/lock")
@@ -1523,7 +1655,7 @@ async def attach(ws: WebSocket, session: str, host: str | None = Query(None)):
         except (asyncio.TimeoutError, ValueError, WebSocketDisconnect):
             await ws.close(code=4401)
             return
-        if first.get("type") != "auth" or not check_grant(first.get("token"), origin):
+        if first.get("type") != "auth" or not consented(origin, first.get("token")):
             await ws.close(code=4401)
             return
     live = sessions.get(session)

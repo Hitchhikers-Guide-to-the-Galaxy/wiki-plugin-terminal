@@ -113,6 +113,23 @@ the first websocket frame, and dies with the service (the secret is minted
 at start). Never a cookie. Nothing runs on view: a `GUARD` on a non-local page is a button, not
 a poll.
 
+**Standing Unlock — your own sites need no padlock (0.9.24).** An owner
+entry under `farms` may add `"standing": true`:
+`{"farms": [{"anchor": "https://fab.fish", "owner": "david", "standing": true}]}`.
+Every site that owner has on that farm then passes the keyboard trust with no
+grant, in every tab and across restarts; the padlock shows open and says so.
+Publication is still checked on every run, `except` still removes a site, a
+whole-farm entry (no owner) never stands, and **Lock everything** on the
+Unlock page pauses the standing Unlock until you press *Resume* there or the
+service restarts. Turn it off for good by removing the flag.
+
+**Claude sessions, read-only.** `GET /terminal/agents` runs `claude agents
+--json` on this machine and returns the sessions plus, for each pid the wiki
+started, the name of its terminal session. It never returns a process
+environment, and no text from the page runs, so it needs only an allowed
+origin and the Unlock (or a standing one). The Plan Tool's Claude Sessions
+face uses it.
+
 **Signed items — trust that follows the author.** Since 0.9.0 an item may
 carry a `signature` (`{alg: "bip340", pubkey, created_at, sig}`): the item's
 text, directives included, signed as a nostr event (NIP-01, kind 30078, tags

@@ -26,6 +26,7 @@ def trust_file(tmp_path, monkeypatch):
     monkeypatch.setattr(t, "trust", t.TrustStore(str(f)))
     t._page_cache.clear()
     t.lock_all()
+    t.resume_standing()
     yield f
 
 
@@ -318,7 +319,8 @@ def test_unreachable_anchor_contributes_nothing(trust_file, monkeypatch):
 def test_bare_farm_host_and_private_anchor(trust_file, monkeypatch):
     trust_file.write_text(json.dumps({"farms": ["fab.fish", "https://10.0.0.5", "not a host",
                                                 {"anchor": "fab.fish", "owner": "david"}, {"anchor": "fab.fish", "owner": "../x"}]}))
-    assert t.trust.farms() == [{"anchor": "https://fab.fish", "owner": None}, {"anchor": "https://fab.fish", "owner": "david"}]
+    assert t.trust.farms() == [{"anchor": "https://fab.fish", "owner": None, "standing": False},
+                               {"anchor": "https://fab.fish", "owner": "david", "standing": False}]
 
 
 def test_owner_farm_asks_for_that_logins_sites(trust_file, monkeypatch):
@@ -339,7 +341,7 @@ def test_trust_view_shows_farms(client, farm):
     r = client.get("/terminal/trust", headers={"Origin": LOCAL})
     assert r.status_code == 200
     body = r.json()
-    assert body["farms"] == [{"anchor": "https://fab.fish", "owner": None}] and body["farm_sites"] == 1 and body["except"] == ["lena.solidarity.quest"]
+    assert body["farms"] == [{"anchor": "https://fab.fish", "owner": None, "standing": False}] and body["farm_sites"] == 1 and body["except"] == ["lena.solidarity.quest"]
     assert body["sites"] == ["plan.ide.earth", "time.solidarity.quest"] and body["listed"] == ["plan.ide.earth"]
 
 
