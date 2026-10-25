@@ -380,7 +380,10 @@ const rememberSend = (id, rec) => { try { sessionStorage.setItem(SENT_KEY(id), J
 const progress = ($item, html, kind = 'info') =>
   $item.find('.terminal-reply').html(`<div class="t-progress t-progress-${kind}">${html}</div>`)
 // A wiki editor is open somewhere in the lineup: a reload would lose it.
-const editingNow = () => Boolean(document.querySelector('.page textarea, .page [contenteditable="true"]'))
+// xterm's own hidden input is a textarea too; it is not an editor. Counting it
+// meant a BUTTON: show item (its terminal open) never reloaded the page by itself.
+const editingNow = () => Boolean(document.querySelector(
+  '.page textarea:not(.xterm-helper-textarea), .page [contenteditable="true"]:not(.xterm *)'))
 
 const whoRuns = opts => /\bclaude\b/i.test(String(opts.boot || '')) ? 'Claude' : 'The session'
 
